@@ -1,7 +1,9 @@
 // ==UserScript==
 // @name         视频号标准订单逐单加热助手
 // @namespace    local.channels.standard-order-reorder
-// @version      0.2.3
+// @version      0.2.4
+// @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/%E8%A7%86%E9%A2%91%E5%8F%B7%E6%A0%87%E5%87%86%E8%AE%A2%E5%8D%95%E9%80%90%E5%8D%95%E5%8A%A0%E7%83%AD%E5%8A%A9%E6%89%8B.user.js
+// @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/%E8%A7%86%E9%A2%91%E5%8F%B7%E6%A0%87%E5%87%86%E8%AE%A2%E5%8D%95%E9%80%90%E5%8D%95%E5%8A%A0%E7%83%AD%E5%8A%A9%E6%89%8B.user.js
 // @description  来源订单按记录页码和ID快速定位，向后查找并更新页码；支持自定义名称/预算、优惠券、人工支付后继续
 // @match        https://channels.weixin.qq.com/promote/*
 // @run-at       document-idle

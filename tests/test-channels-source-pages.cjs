@@ -58,10 +58,10 @@ const row=(id,name=id,budget=100)=>({id,name,budget,status:'已结束'});
  e=environment([[row('fresh','A')],[row('old','A'),row('b','B')],[row('older','A')]],3);
  const found=new Map();await e.api.scanPages(['A','B'],found);assert.equal(found.get('A').id,'fresh');assert.deepEqual(e.jumps,[1,2]);
  // Match the first eligible exact name across pages, including the threshold itself.
- const roiRow=(id,name,status,roi)=>({...row(id,name),status,roi,hasRoiColumn:true});
+ const roiRow=(id,name,status,roi,spent)=>({...row(id,name),status,roi,spent,hasRoiColumn:true});
  e=environment([
-  [roiRow('active','A','加热中',5),roiRow('timed-out','A','已结束 · 达到最大加热时长',4),roiRow('low','A','已结束 · 消耗完成',1.9)],
-  [roiRow('exact','A','已结束 · 消耗完成',2),roiRow('no-data','B','已结束 · 消耗完成',null),roiRow('unlisted','C','已结束 · 消耗完成',4)]
+  [roiRow('active','A','加热中',5,90),roiRow('partial','A','已结束 · 消耗完成',4,99.99),roiRow('low','A','已结束 · 消耗完成',1.9,100)],
+  [roiRow('exact','A','已结束',2,100),roiRow('no-data','B','已结束 · 消耗完成',null,100),roiRow('unlisted','C','已结束 · 消耗完成',4,100)]
  ]);
  const filtered=new Map();
  await e.api.scanPages(['A','B'],filtered,2);

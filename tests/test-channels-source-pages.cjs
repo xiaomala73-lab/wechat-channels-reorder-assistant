@@ -8,7 +8,7 @@ function environment(pages,startPage=1){
  class Clock extends Date{static now(){return now;}}
  const c={state,Date:Clock,URL,Number,console,scanCancel:false,location:{href:'https://channels.weixin.qq.com/promote/pages/platform/order-list?tab=standard'}};
  vm.createContext(c);vm.runInContext(functions+`\nrender=()=>{};
-  globalThis.api={locateSourceOrder,stableOrderPage,scanPages,queueApprovalKey,approvedFor,
+  globalThis.api={locateSourceOrder,stableOrderPage,scanPages,queueApprovalKey,approvedFor,parseRoi,selectedNames,
    setup(mocks){onList=()=>true;ensureAccount=mocks.ensureAccount;pageNumber=mocks.pageNumber;maxPage=mocks.maxPage;
     readRows=mocks.readRows;gotoPage=mocks.gotoPage;waitUntil=mocks.waitUntil;save=mocks.save;log=mocks.log;},
    cancel(){scanCancel=true;}};`,c);
@@ -57,5 +57,20 @@ const row=(id,name=id,budget=100)=>({id,name,budget,status:'已结束'});
  // Initial scan still starts from page 1, picks the foremost exact-name source, and stops when complete.
  e=environment([[row('fresh','A')],[row('old','A'),row('b','B')],[row('older','A')]],3);
  const found=new Map();await e.api.scanPages(['A','B'],found);assert.equal(found.get('A').id,'fresh');assert.deepEqual(e.jumps,[1,2]);
+ // Match the first eligible exact name across pages, including the threshold itself.
+ const roiRow=(id,name,status,roi)=>({...row(id,name),status,roi,hasRoiColumn:true});
+ e=environment([
+  [roiRow('active','A','加热中',5),roiRow('timed-out','A','已结束 · 达到最大加热时长',4),roiRow('low','A','已结束 · 消耗完成',1.9)],
+  [roiRow('exact','A','已结束 · 消耗完成',2),roiRow('no-data','B','已结束 · 消耗完成',null),roiRow('unlisted','C','已结束 · 消耗完成',4)]
+ ]);
+ const filtered=new Map();
+ await e.api.scanPages(['A','B'],filtered,2);
+ assert.deepEqual([...filtered.values()].map(item=>item.id),['exact']);
+ e.state.names='A\nB';e.state.matches=[...filtered.values()];e.state.roiMinimum='2';
+ assert.equal(e.api.selectedNames().join(','),'A');
+ assert.equal(e.api.parseRoi('２．５０'),2.5);
+ assert.equal(e.api.parseRoi('—'),null);
+ e=environment([[row('no-column')]]);
+ await assert.rejects(e.api.scanPages(['no-column'],new Map(),2),/未识别到“直接成交ROI”列/);
  console.log('通过：记录页直达、同页复用、新单插入向后定位、更新其他待投订单页码、支付返回后复用、必要时回查、精确ID及名称预算保护、延迟加载、账户变化、停止和首轮最靠前匹配。');
 })().catch(error=>{console.error(error);process.exitCode=1;});

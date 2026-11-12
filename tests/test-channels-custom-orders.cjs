@@ -1,7 +1,7 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const source=fs.readFileSync('视频号标准订单逐单加热助手.user.js','utf8');
 const functions=source.slice(source.indexOf('  function clean('),source.indexOf('  // 关闭标签页期间'));
-const state={account:'测试账户',queue:[],index:0,edits:{},logs:[],matches:[],choices:{}};
+const state={account:'测试账户',roiMinimum:'',queue:[],index:0,edits:{},logs:[],matches:[],choices:{}};
 const messages=[],context={state,URL,location:{href:'https://channels.weixin.qq.com/promote/pages/platform/create-order?orderType=standard&sourcePromotionId=123'},Number,Date,console,busy:false,tabId:'test',STORE_KEY:'test',GM_setValue(){},window:{},document:{body:{innerText:''}}};
 vm.createContext(context);
 vm.runInContext(functions+`\nrender=()=>{};log=message=>messages.push(message);ensureAccount=()=>{};tick=()=>{};
@@ -53,6 +53,7 @@ context.HTMLInputElement=Input;context.Event=class{constructor(type){this.type=t
   assert.equal(api.paidDetail(),true);
   context.document.body.innerText='加热详情 订单审核中 订单消耗 ¥0/¥100';assert.equal(api.paidDetail(),false);
   state.stage='ready';state.scanComplete=true;state.edits={'123':{name:'快照新名称',budget:'400'}};
+  context.shadow={getElementById:id=>({value:state[id]})};
   await api.startQueue();assert.equal(state.queue[0].targetBudget,400);assert.equal(state.queue[0].targetName,'快照新名称');assert.equal(state.queue[0].budget,100);
   state.edits['123'].name='再次修改';assert.equal(state.queue[0].targetName,'快照新名称');
   assert.equal(api.approvedFor(state.queue[0]),true);

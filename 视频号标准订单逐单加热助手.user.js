@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         视频号标准订单逐单加热助手
 // @namespace    local.channels.standard-order-reorder
-// @version      0.2.4
+// @version      0.2.5
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/%E8%A7%86%E9%A2%91%E5%8F%B7%E6%A0%87%E5%87%86%E8%AE%A2%E5%8D%95%E9%80%90%E5%8D%95%E5%8A%A0%E7%83%AD%E5%8A%A9%E6%89%8B.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/%E8%A7%86%E9%A2%91%E5%8F%B7%E6%A0%87%E5%87%86%E8%AE%A2%E5%8D%95%E9%80%90%E5%8D%95%E5%8A%A0%E7%83%AD%E5%8A%A9%E6%89%8B.user.js
-// @description  来源订单按记录页码和ID快速定位，向后查找并更新页码；支持自定义名称/预算、优惠券、人工支付后继续
+// @description  支持筛选当天创建、消耗完成且直接成交ROI达标的订单，自定义名称/预算、优惠券及人工支付后继续
 // @match        https://channels.weixin.qq.com/promote/*
 // @run-at       document-idle
 // @noframes
@@ -31,7 +31,7 @@
   const STORE_KEY = ROOT + ':state:' + tabId;
   const stored = tabId ? GM_getValue(STORE_KEY, null) : null;
   const state = Object.assign({
-    names: '', matches: [], choices: {}, edits: {}, settingsExpanded: true, queue: [], index: 0,
+    names: '', roiMinimum: '', matches: [], choices: {}, edits: {}, settingsExpanded: true, queue: [], index: 0,
     stage: 'idle', account: '', scanComplete: false, pageCount: 0, lastSourcePage: 0,
     detailUrl: '', reviewUrl: '', returningAt: 0, openingAt: 0, reviewAmount: null,
     approvedQueueKey: '', pausedFrom: '', currentError: '', logs: []
@@ -44,6 +44,7 @@
   let open = false;
   let busy = false;
   let scanCancel = false;
+  let appliedOrderDate = null;
   if (!state.edits || typeof state.edits !== 'object' || Array.isArray(state.edits)) state.edits = {};
 
   const host = document.createElement('div');
@@ -109,6 +110,87 @@
     return name;
   }
   function parseNames(value) { return [...new Set(String(value).split(/[\n,，、;；]+/).map(clean).filter(Boolean))]; }
+  function parseRoi(value) {
+    const textValue = clean(value).normalize('NFKC');
+    if (!/^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/.test(textValue)) return null;
+    const roi = Number(textValue.replace(/,/g, ''));
+    return Number.isFinite(roi) ? roi : null;
+  }
+  function matchesRoiFilter(row, minimum) {
+    return /^(?:已结束[\s·・:：—-]*)?消耗完成$/.test(row.status) &&
+      Number.isFinite(row.roi) && row.roi >= minimum;
+  }
+  function selectedNames() {
+    const names = parseNames(state.names);
+    return state.roiMinimum === '' ? names : names.filter(name => state.matches.some(row => row.name === name));
+  }
+  function todayInShanghai() {
+    return new Intl.DateTimeFormat('sv-SE', {timeZone:'Asia/Shanghai', year:'numeric', month:'2-digit', day:'2-digit'}).format();
+  }
+  function dateInputs(card) {
+    const field = card.querySelector('.filter-field--order-create-time');
+    return ['开始日期', '结束日期'].map(label => field?.querySelector('input[placeholder="' + label + '"]'));
+  }
+  function orderTable() {
+    return Array.from(document.querySelectorAll('table.finder-ui-desktop-table__core-table')).find(table =>
+      visible(table) && ['订单信息','投放进度','订单状态'].every(label => text(table.tHead).includes(label)));
+  }
+  async function applyTodayOrderFilter(day) {
+    if (day !== todayInShanghai()) throw new Error('本轮订单日期已跨天，请重新扫描当天订单');
+    ensureAccount();
+    const card = one(Array.from(document.querySelectorAll('.finder-card')).filter(el =>
+      el.querySelector('input[placeholder="开始日期"]') &&
+      Array.from(el.querySelectorAll('button')).some(btn => text(btn) === '筛选')), '订单筛选区');
+    if (!dateInputs(card).every(visible)) {
+      const expand = one(Array.from(card.querySelectorAll('span')).filter(el => text(el) === '展开'), '展开订单筛选');
+      expand.click();
+      await waitUntil(() => dateInputs(card).every(visible), '订单创建时间筛选');
+    }
+    const table = await waitUntil(orderTable, '标准订单表加载');
+    const region = table.closest('.table_out');
+    if (!region) throw new Error('未识别到标准订单表的加载状态');
+    const hasToday = () => dateInputs(card).every(input => input?.value === day);
+    const resultCount = () => {
+      const results = orderTable()?.closest('.finder-card');
+      for (const span of results?.querySelectorAll('span') || []) {
+        const count = text(span).match(/^订单总数[（(]([\d,]+)[）)]$/);
+        if (count) return Number(count[1].replace(/,/g, ''));
+      }
+      return null;
+    };
+    if (appliedOrderDate?.region === region && appliedOrderDate.day === day && hasToday() &&
+        !region.classList.contains('mp-table-fixed--loading')) return resultCount();
+    if (!hasToday()) {
+      dateInputs(card)[0].click();
+      const today = await waitUntil(() => Array.from(card.querySelectorAll(
+        '.filter-field--order-create-time .finder-ui-desktop-picker__panel__quick-select__buttons'
+      )).find(el => visible(el) && text(el) === '今天'), '订单创建时间的“今天”选项');
+      today.click();
+      await waitUntil(hasToday, '订单创建时间回读');
+    }
+    const filter = one(Array.from(card.querySelectorAll('button')).filter(el => text(el) === '筛选'), '筛选按钮');
+    let started = false;
+    const loadingClass = 'mp-table-fixed--loading';
+    const observer = new MutationObserver(records => {
+      started ||= region.classList.contains(loadingClass) ||
+        records.some(record => record.oldValue?.split(/\s+/).includes(loadingClass));
+    });
+    observer.observe(region, {attributes:true, attributeFilter:['class'], attributeOldValue:true});
+    let count;
+    try {
+      filter.click();
+      count = await waitUntil(() => {
+        const activeRegion = orderTable()?.closest('.table_out');
+        if ((!started && !region.classList.contains(loadingClass)) || !hasToday() ||
+            !activeRegion || activeRegion.classList.contains(loadingClass)) return null;
+        const total = resultCount();
+        return total === null ? null : {total};
+      }, '当天订单筛选结果加载');
+    } finally { observer.disconnect(); }
+    ensureAccount();
+    appliedOrderDate = {region:orderTable()?.closest('.table_out'), day};
+    return count.total;
+  }
   function currentItem() { return state.queue[state.index] || null; }
   function targetName(item) { return item?.targetName == null ? item?.name || '' : item.targetName; }
   function targetBudget(item) { return item?.targetBudget == null ? item?.budget : item.targetBudget; }
@@ -118,7 +200,7 @@
   }
   function selectedDraftTotal() {
     try {
-      const names=parseNames(state.names);
+      const names=selectedNames();
       if(!names.length)return null;
       return names.reduce((sum,name)=>{
         const item=state.matches.find(x=>x.name===name&&x.id===state.choices[name]);
@@ -152,6 +234,8 @@
 
   function readRows() {
     if (!onList()) throw new Error('请打开标准订单列表');
+    const page = pageNumber();
+    const headersByTable = new Map();
     return Array.from(document.querySelectorAll('tr')).filter(visible).map(row => {
       const cells = Array.from(row.querySelectorAll(':scope > td'));
       if (cells.length < 4) return null;
@@ -160,8 +244,20 @@
       if (!id) return null;
       const name = text(cells[0].querySelector('.text-sm.font-medium.text-fg-0')) || first.split('短视频加热')[0].trim();
       const budgetMatch = text(cells[1]).match(/[￥¥]\s*[\d,.]+\s*\/\s*[￥¥]\s*([\d,.]+)/);
+      const table = row.closest('table');
+      if (!headersByTable.has(table)) {
+        const headerRows = Array.from(table?.tHead?.rows || []);
+        headersByTable.set(table, headerRows.filter(visible).map(header => Array.from(header.cells)));
+      }
+      const header = headersByTable.get(table).find(columns => columns.length === cells.length &&
+        columns.every(cell => cell.colSpan === 1) &&
+        ['订单信息', '投放进度', '订单状态'].every((label, index) => text(columns[index]) === label));
+      const roiIndexes = (header || []).flatMap((cell, index) =>
+        text(cell).replace(/\s/g, '') === '直接成交ROI' ? [index] : []);
+      const hasRoiColumn = roiIndexes.length === 1;
       return { id, name, budget: budgetMatch ? Number(budgetMatch[1].replace(/,/g, '')) : NaN,
-        status: text(cells[2]), page: pageNumber(), row };
+        status: text(cells[2]), roi: hasRoiColumn ? parseRoi(text(cells[roiIndexes[0]])) : null,
+        hasRoiColumn, page, row };
     }).filter(Boolean);
   }
   async function waitUntil(check, label, ms = 18000) {
@@ -199,7 +295,7 @@
       if (!rows.length || rows.some(x => !x.name || !Number.isFinite(x.budget) || x.budget <= 0)) {
         signature = ''; stableSince = 0; return null;
       }
-      const next = rows.map(x => x.id + ':' + x.name + ':' + x.budget).join('|');
+      const next = JSON.stringify(rows.map(x => [x.id, x.name, x.budget, x.status, x.roi, x.hasRoiColumn]));
       if (next !== signature) { signature = next; stableSince = Date.now(); return null; }
       return Date.now() - stableSince >= 300 ? rows : null;
     }, '第 ' + page + ' 页订单预算完整加载', 15000);
@@ -275,23 +371,29 @@
     }
     return row;
   }
-  async function scanPages(names, collect, stopWhenId = '') {
+  async function scanPages(names, collect, roiMinimum = null, orderDay = '') {
     await waitUntil(() => onList() && pageNumber() > 0 && readRows().length > 0, '标准订单表加载', 20000);
-    const total = maxPage();
-    for (let page = 1; page <= total; page++) {
+    for (let page = 1; page <= maxPage(); page++) {
       if (page > 200) throw new Error('前 200 页仍未找齐订单，请先用平台筛选缩小范围');
       if (scanCancel) throw new Error('已停止扫描');
       ensureAccount();
       await gotoPage(page);
       const rows = await stableOrderPage(page);
+      if (scanCancel) throw new Error('已停止扫描');
+      if (orderDay && orderDay !== todayInShanghai()) throw new Error('扫描已跨天，请重新扫描当天订单');
+      ensureAccount();
+      if (roiMinimum !== null && !rows.some(row => row.hasRoiColumn))
+        throw new Error('未识别到“直接成交ROI”列，请在平台展示项中开启后重新扫描');
       for (const row of rows) {
-        if (stopWhenId && row.id === stopWhenId) return row;
-        if (!stopWhenId && names.includes(row.name) && !collect.has(row.name)) collect.set(row.name, {
-          id: row.id, name: row.name, budget: row.budget, status: row.status, page
-        });
+        if (names.includes(row.name) && !collect.has(row.name) &&
+            (roiMinimum === null || matchesRoiFilter(row, roiMinimum))) {
+          collect.set(row.name, {
+            id: row.id, name: row.name, budget: row.budget, status: row.status, roi: row.roi, roiMinimum, orderDay, page
+          });
+        }
       }
       state.pageCount = page;
-      if (!stopWhenId && collect.size === names.length) { save(); return null; }
+      if (collect.size === names.length) { save(); return null; }
       if (page === 1 || page % 5 === 0) { save(); }
       if (page >= maxPage()) break;
     }
@@ -311,18 +413,26 @@
       const input = shadow.getElementById('names');
       const names = parseNames(input.value);
       if (!names.length) throw new Error('请先输入要查找的完整订单名称');
+      const minimumText = clean(shadow.getElementById('roiMinimum').value);
+      const minimum = parseRoi(minimumText);
+      if (minimumText && minimum === null) throw new Error('最低 ROI 请输入 0 或正数');
       state.names = names.join('\n');
+      state.roiMinimum = minimumText;
       state.account = accountName();
       if (!state.account) throw new Error('无法确认当前视频号账户');
       state.matches = []; state.choices = {}; state.edits = {}; state.scanComplete = false; state.pageCount = 0; state.lastSourcePage = 0;
       state.stage = 'scanning'; save();
       const found = new Map();
-      await scanPages(names, found);
+      const day = minimum === null ? '' : todayInShanghai();
+      appliedOrderDate = null;
+      if (!day || await applyTodayOrderFilter(day) !== 0) await scanPages(names, found, minimum, day);
+      if (scanCancel) throw new Error('已停止扫描');
       state.matches = Array.from(found.values());
       state.choices = Object.fromEntries(state.matches.map(x => [x.name, x.id]));
       state.scanComplete = true;
       state.stage = 'ready'; state.settingsExpanded = true;
-      log('扫描完成：' + state.pageCount + ' 页；每个名称只取最靠前的一条，找到 ' + state.matches.length + '/' + names.length + ' 个名称');
+      log('扫描完成：' + state.pageCount + ' 页；找到 ' + state.matches.length + '/' + names.length +
+        ' 个名称' + (day ? '符合当天创建、消耗完成且直接成交 ROI ≥ ' + minimum + '（' + day + '）' : ''));
     } catch (error) {
       state.stage = 'idle'; state.scanComplete = false;
       log('扫描中止：' + error.message);
@@ -335,7 +445,11 @@
     try {
       if (state.stage !== 'ready' || !state.scanComplete) throw new Error('请先完成列表扫描');
       ensureAccount();
-      const names = parseNames(state.names), queue = [];
+      if (parseNames(shadow.getElementById('names').value).join('\n') !== state.names ||
+          clean(shadow.getElementById('roiMinimum').value) !== state.roiMinimum)
+        throw new Error('名称或最低 ROI 已修改，请重新扫描');
+      const names = selectedNames(), queue = [];
+      if (!names.length) throw new Error('没有符合条件的订单');
       let repairedBudget = false;
       for (const name of names) {
         const id = state.choices[name];
@@ -379,6 +493,8 @@
     if (!onList()) throw new Error('请返回订单管理 → 标准订单');
     ensureAccount();
     scanCancel = false;
+    if (item.orderDay && await applyTodayOrderFilter(item.orderDay) === 0)
+      throw new Error('当天筛选结果已没有订单，请重新核对本轮来源');
     await waitUntil(() => onList() && pageNumber() > 0 && readRows().length > 0,
       '标准订单列表重新加载', 20000);
     const row = await locateSourceOrder(item);
@@ -386,6 +502,9 @@
     if (row.name !== item.name || row.budget !== item.budget)
       throw new Error('来源订单信息与锁定记录不符：页面“' + row.name + '”/¥' +
         row.budget + '，锁定“' + item.name + '”/¥' + item.budget);
+    if (Number.isFinite(item.roiMinimum) && !matchesRoiFilter(row, item.roiMinimum))
+      throw new Error('来源订单 ' + item.id + ' 当前状态“' + row.status + '”、直接成交 ROI ' +
+        (row.roi ?? '未读到') + '，未通过消耗完成且 ROI ≥ ' + item.roiMinimum + ' 的复核');
     if (!approvedFor(item)) {
       state.stage = 'awaiting_consent'; save();
       return;
@@ -736,13 +855,16 @@
     const names = parseNames(state.names), item = currentItem();
     const expanded = state.settingsExpanded !== false;
     const editing = state.stage === 'ready' && expanded;
+    const filtering = state.roiMinimum !== '';
+    const canScan = ['idle', 'ready', 'complete'].includes(state.stage);
+    const selectedCount = selectedNames().length;
     const selected = names.map(name => {
       const candidates = state.matches.filter(x => x.name === name);
       const chosen=candidates.find(x=>x.id===state.choices[name]);
       const draft=chosen?orderDraft(chosen):null,editable=state.stage==='ready'&&!busy;
       const editor=draft?`<div style="padding:7px 0"><label>新订单名称<input data-edit-id="${esc(chosen.id)}" data-edit-field="name" maxlength="25" value="${esc(draft.name)}" ${editable?'':'disabled'}></label><label>追投预算（元）<input type="number" inputmode="numeric" min="100" max="300000" step="100" data-edit-id="${esc(chosen.id)}" data-edit-field="budget" value="${esc(draft.budget)}" ${editable?'':'disabled'}></label><div class="muted">100～300000 元，且为 100 的整数倍；优惠券抵扣另行计算。</div><button class="btn small" data-default-id="${esc(chosen.id)}" ${editable?'':'disabled'}>恢复原名称与预算</button></div>`:'';
       return `<div class="group"><b>${esc(name)}</b> <span class="muted">${candidates.length} 条</span>${candidates.length ? candidates.map(x =>
-        `<label class="candidate"><input type="radio" name="choice-${esc(name)}" data-name="${esc(name)}" value="${esc(x.id)}" ${state.choices[name] === x.id ? 'checked' : ''} ${editable?'':'disabled'}><span><b>${esc(x.id)}</b><br>${esc(x.status)} · 原预算 ¥${esc(x.budget)} · 第 ${x.page} 页</span></label>`).join('') : '<div class="muted">未找到，请核对名称或平台筛选条件。</div>'}${editor}</div>`;
+        `<label class="candidate"><input type="radio" name="choice-${esc(name)}" data-name="${esc(name)}" value="${esc(x.id)}" ${state.choices[name] === x.id ? 'checked' : ''} ${editable?'':'disabled'}><span><b>${esc(x.id)}</b><br>${esc(x.status)}${x.roi != null ? ` · 直接成交 ROI ${esc(x.roi)}` : ''} · 原预算 ¥${esc(x.budget)} · 第 ${x.page} 页</span></label>`).join('') : `<div class="muted">${filtering ? '今天没有消耗完成且直接成交 ROI 达标的同名订单。' : '未找到，请核对名称或平台筛选条件。'}</div>`}${editor}</div>`;
     }).join('');
     const totalBudget = selectedDraftTotal();
     const queue = state.queue.map((x,i) => `<div class="queueItem ${i === state.index ? 'current' : ''}">${i+1}. ${esc(targetName(x))} · 追投 ¥${esc(targetBudget(x))}<br><span class="muted">来源：${esc(x.name)} · 原预算 ¥${esc(x.budget)}<br>${esc(x.id)} · ${esc(x.result)}</span></div>`).join('');
@@ -757,9 +879,9 @@
     if (item?.submittedAt && ['await_result','await_payment','needs_review','paused'].includes(state.stage)) {
       action += '<div class="hint">如已付款但未识别，请先在平台核对新订单名称、预算及付款状态，返回标准订单列表后人工确认。此操作会跳过本单的自动核验。</div><div class="row"><button class="btn" id="manualPaid">已人工核实付款，完成本单</button></div>';
     }
-    shadow.innerHTML = css + `<button class="launcher" id="launch" style="display:${open ? 'none' : 'block'}">加热助手</button><div class="panel ${editing ? 'editing' : ''}" style="display:${open ? 'flex' : 'none'}"><div class="head"><div><strong>视频号标准订单逐单加热助手</strong><small>v0.2.3 · 记住来源页码 / ID快速定位 · 人工支付</small></div><button id="min" title="最小化">−</button></div><div class="body">
-      <div class="card"><div class="title">账户与进度</div><div class="muted">${esc(state.account || accountName() || '尚未锁定账户')}</div><div class="status">${esc({idle:'等待查找来源订单',scanning:'正在扫描第 '+state.pageCount+' 页',ready:'已预选各名称最靠前的订单，请核对',locating:'正在定位来源订单',awaiting_consent:'等待核对本轮剩余订单',opening:'正在打开“再来一单”',review:approvedFor(item) ? '正在核对新单并自动提交' : '等待核对本单并提交',submitting:'已点击提交，正在核实平台结果',await_result:'已提交，持续等待支付结果',await_payment:'等待你完成支付',verifying_payment:'支付后核对并返回列表',returning:'正在返回标准订单列表',needs_review:'已暂停，需核对当前结果',paused:'已暂停',complete:'队列全部完成'}[state.stage] || state.stage)}</div>${item ? `<div class="hint">新单：${esc(targetName(item))} · 追投预算 ¥${esc(targetBudget(item))}<br>来源：${esc(item.name)} · ${esc(item.id)} · 原预算 ¥${esc(item.budget)}${state.reviewAmount != null ? ' · 本单需支付 ¥'+esc(state.reviewAmount) : ''}</div>` : ''}${action}</div>
-      <div class="card"><button id="toggleSettings" class="settingsToggle">${expanded ? '收起设置' : '展开设置'}</button><div class="title">来源订单与新单设置</div>${!expanded ? `<div class="settingsSummary">${state.queue.length ? '本轮已锁定 '+state.queue.length+' 单，新名称和追投预算可在下方队列查看。' : '展开后扫描订单、编辑新名称和追投预算。'}</div>` : ''}<div style="display:${expanded ? 'block' : 'none'};clear:both"><div class="muted">每行一个完整名称；首次扫描从第一页找齐；开始后优先记录页码定位来源 ID，未找到时继续向后查找。</div><textarea id="names" placeholder="增香液-1&#10;增香液-2&#10;增香液-3" ${!['idle','ready','complete'].includes(state.stage) ? 'disabled' : ''}>${esc(state.names)}</textarea><div class="row"><button class="btn" id="scan" ${busy || !['idle','ready','complete'].includes(state.stage) ? 'disabled' : ''}>扫描订单</button>${state.stage === 'scanning' ? '<button class="btn danger" id="cancelScan">停止扫描</button>' : ''}</div>${state.matches.length || state.scanComplete ? `<div class="muted" style="margin:8px 0">已扫描 ${state.pageCount} 页，找到 ${state.matches.length}/${names.length} 个名称</div><div class="list">${selected}</div>${state.stage === 'ready' ? `<div class="hint">请核对本轮 ${names.length} 单的来源编号、新订单名称和追投预算。<span id="targetTotal">${totalBudget == null ? '请检查新名称及追投预算' : '追投预算合计 ¥' + totalBudget.toFixed(2)}</span>。点击开始表示你已阅读并同意《微信视频号企业账号加热功能服务协议》；助手将逐单核实新单金额后自动勾选协议和提交，每单支付仍由你手动完成。</div>` : ''}<div class="row"><button class="btn primary" id="start" ${state.stage !== 'ready' ? 'disabled' : ''}>我已核对本轮订单并同意协议，开始逐单提交</button></div>` : ''}</div>
+    shadow.innerHTML = css + `<button class="launcher" id="launch" style="display:${open ? 'none' : 'block'}">加热助手</button><div class="panel ${editing ? 'editing' : ''}" style="display:${open ? 'flex' : 'none'}"><div class="head"><div><strong>视频号标准订单逐单加热助手</strong><small>v0.2.5 · 记住来源页码 / ID快速定位 · 人工支付</small></div><button id="min" title="最小化">−</button></div><div class="body">
+      <div class="card"><div class="title">账户与进度</div><div class="muted">${esc(state.account || accountName() || '尚未锁定账户')}</div><div class="status">${esc({idle:'等待查找来源订单',scanning:'正在扫描第 '+state.pageCount+' 页',ready:filtering ? (selectedCount ? '已预选当天符合条件的订单，请核对' : '当天没有订单符合筛选条件') : '已预选各名称最靠前的订单，请核对',locating:'正在定位来源订单',awaiting_consent:'等待核对本轮剩余订单',opening:'正在打开“再来一单”',review:approvedFor(item) ? '正在核对新单并自动提交' : '等待核对本单并提交',submitting:'已点击提交，正在核实平台结果',await_result:'已提交，持续等待支付结果',await_payment:'等待你完成支付',verifying_payment:'支付后核对并返回列表',returning:'正在返回标准订单列表',needs_review:'已暂停，需核对当前结果',paused:'已暂停',complete:'队列全部完成'}[state.stage] || state.stage)}</div>${item ? `<div class="hint">新单：${esc(targetName(item))} · 追投预算 ¥${esc(targetBudget(item))}<br>来源：${esc(item.name)} · ${esc(item.id)} · 原预算 ¥${esc(item.budget)}${state.reviewAmount != null ? ' · 本单需支付 ¥'+esc(state.reviewAmount) : ''}</div>` : ''}${action}</div>
+      <div class="card"><button id="toggleSettings" class="settingsToggle">${expanded ? '收起设置' : '展开设置'}</button><div class="title">来源订单与新单设置</div>${!expanded ? `<div class="settingsSummary">${state.queue.length ? '本轮已锁定 '+state.queue.length+' 单，新名称和追投预算可在下方队列查看。' : '展开后扫描订单、编辑新名称和追投预算。'}</div>` : ''}<div style="display:${expanded ? 'block' : 'none'};clear:both"><div class="muted">每行一个完整名称；首次扫描从第一页找齐；开始后优先记录页码定位来源 ID，未找到时继续向后查找。</div><textarea id="names" placeholder="增香液-1&#10;增香液-2&#10;增香液-3" ${!['idle','ready','complete'].includes(state.stage) ? 'disabled' : ''}>${esc(state.names)}</textarea><label>最低直接成交 ROI<input id="roiMinimum" type="text" inputmode="decimal" value="${esc(state.roiMinimum)}" placeholder="例如 2.0，留空按名称扫描" ${busy || !canScan ? 'disabled' : '' }></label><div class="muted">填写后，仅查今天创建的订单。每个名称取第一条消耗完成且 ROI 达标的订单。</div><div class="row"><button class="btn" id="scan" ${busy || !['idle','ready','complete'].includes(state.stage) ? 'disabled' : ''}>扫描订单</button>${state.stage === 'scanning' ? '<button class="btn danger" id="cancelScan">停止扫描</button>' : ''}</div>${state.matches.length || state.scanComplete ? `<div class="muted" style="margin:8px 0">已扫描 ${state.pageCount} 页，找到 ${state.matches.length}/${names.length} 个名称</div><div class="list">${selected}</div>${state.stage === 'ready' && selectedCount ? `<div class="hint">请核对本轮 ${selectedCount} 单的来源编号、新订单名称和追投预算。<span id="targetTotal">${totalBudget == null ? '请检查新名称及追投预算' : '追投预算合计 ¥' + totalBudget.toFixed(2)}</span>。点击开始表示你已阅读并同意《微信视频号企业账号加热功能服务协议》；助手将逐单核实新单金额后自动勾选协议和提交，每单支付仍由你手动完成。</div>` : ''}<div class="row"><button class="btn primary" id="start" ${busy || state.stage !== 'ready' || !selectedCount ? 'disabled' : ''}>我已核对本轮订单并同意协议，开始逐单提交</button></div>` : ''}</div>
       </div><div class="card"><div class="title">逐单队列</div>${queue || '<div class="muted">尚未选择来源订单</div>'}<div class="row"><button class="btn danger" id="pause" ${!['locating','awaiting_consent','opening','review','await_result','await_payment'].includes(state.stage) ? 'disabled' : ''}>暂停</button><button class="btn" id="reset">清空队列</button></div></div>
       <div class="card"><div class="title">执行记录</div><div class="log">${esc(state.logs.slice(-35).join('\n') || '尚无记录')}</div><div class="row"><button class="btn" id="copy">复制记录</button></div></div>
       </div></div>`;

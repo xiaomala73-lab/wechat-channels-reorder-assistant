@@ -13,12 +13,12 @@
 
 | 视频号助手 | 安装与订阅 |
 | --- | --- |
-| 主页带货发布 | [v1.1.1](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js) |
+| 主页带货发布 | [v1.1.2](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js) |
 | 标准订单逐单加热（视频号追投） | [v0.2.4](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/%E8%A7%86%E9%A2%91%E5%8F%B7%E6%A0%87%E5%87%86%E8%AE%A2%E5%8D%95%E9%80%90%E5%8D%95%E5%8A%A0%E7%83%AD%E5%8A%A9%E6%89%8B.user.js) |
 
 安装或覆盖更新后，保持 Tampermonkey 的「检查更新」开启。后续版本会使用表中的同一个地址。浏览器本地保存的清单和参数需要在各设备分别设置。
 
-主页带货发布助手的上传和商品动态选择器需要按页面校准，首次运行可使用默认的试跑模式。逐单加热助手由用户手动完成每一单的支付。
+主页带货发布助手默认收起，点击页面右侧的「发布助手」即可展开。上传和商品动态选择器需要按页面校准，首次运行可使用默认的试跑模式。逐单加热助手由用户手动完成每一单的支付。
 
 ## 本地验证
 

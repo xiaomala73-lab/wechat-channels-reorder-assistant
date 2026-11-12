@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频号主页带货发布助手
 // @namespace    local.channels.home-video-publisher
-// @version      1.1.1
+// @version      1.1.2
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js
 // @match        https://channels.weixin.qq.com/platform/post/create*
@@ -100,9 +100,9 @@
     #launch{position:fixed;right:0;top:47%;writing-mode:vertical-rl;min-height:104px;background:#087bff;color:white;border:0;border-radius:11px 0 0 11px;letter-spacing:2px}
     fieldset{border:0;padding:0;margin:0;min-width:0}.minor{margin-top:8px}
   </style>
-  <button id="launch" hidden>发布助手</button>
-  <section id="window" aria-label="主页带货发布助手">
-    <header class="head"><div><strong>主页带货发布助手</strong><small>v1.1.0 · 逐条选视频</small></div><button id="min" title="收起面板" aria-label="收起面板">−</button></header>
+  <button id="launch">发布助手</button>
+  <section id="window" aria-label="主页带货发布助手" hidden>
+    <header class="head"><div><strong>主页带货发布助手</strong><small>v1.1.2 · 逐条选视频</small></div><button id="min" title="收起面板" aria-label="收起面板">−</button></header>
     <div class="body">
       <div class="card"><h2>视频清单</h2>
         <fieldset id="editor">

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Task Governor (Android)
 // @namespace    local.qianchuan.task-governor
-// @version      0.1.15
+// @version      0.1.16
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js
 // @description  Android-compatible task governor; preview and verify each page before deleting tasks or increasing budgets.
@@ -604,6 +604,31 @@
       }
       return { candidates, openedInput };
     }
+    async function waitBudgetConfirm(pop, id, addition, target) {
+      const taskLabel = '\u4efb\u52a1 ' + id;
+      const formText = () => text(pop.box);
+      try {
+        await wait(() => {
+          if (!visible(pop.box)) throw new Error('\u9884\u7b97\u7f16\u8f91\u5f39\u5c42\u5df2\u5173\u95ed');
+          const max = formText().match(/\u5f53\u524d\u6700\u591a\u53ef\u518d\u8ffd\u52a0\u9884\u7b97\s*[:\uff1a]?\s*[\u00a5\uffe5]?\s*([\d,.]+)/);
+          if (max && parseMoney(max[1]) < addition) {
+            throw new Error('\u5343\u5ddd\u63d0\u793a\u5f53\u524d\u6700\u591a\u53ef\u8ffd\u52a0 ' + yuan(parseMoney(max[1])) + ' \u5143');
+          }
+          return visible(pop.input) && parseMoney(pop.input.value) === target &&
+            visible(pop.confirm) && !disabled(pop.confirm);
+        }, '\u9884\u7b97\u786e\u5b9a\u6309\u94ae\u542f\u7528', 8000);
+      } catch (error) {
+        const available = text(assertLock().drawer)
+          .match(/\u4eca\u65e5\u53ef\u7528\u9884\u7b97\s*[:\uff1a]?\s*[\u00a5\uffe5]?\s*([\d,.]+)/);
+        const hint = available && parseMoney(available[1]) < addition
+          ? '\u3002\u9875\u9762\u663e\u793a\u4eca\u65e5\u53ef\u7528\u9884\u7b97 ' + yuan(parseMoney(available[1])) + ' \u5143'
+          : '';
+        const details = formText().slice(0, 360);
+        throw new Error(taskLabel + ' \u7533\u8bf7\u8ffd\u52a0 ' + yuan(addition) + ' \u5143\uff0c\u76ee\u6807\u9884\u7b97 ' +
+          yuan(target) + ' \u5143\u3002' + error.message + hint +
+          (details ? '\u3002\u5343\u5ddd\u5f39\u5c42\uff1a' + details : ''));
+      }
+    }
     async function confirmBudget(pop, id, oldBudget, target) {
       const taskLabel = '\u4efb\u52a1 ' + id;
       const change = yuan(oldBudget) + ' \u2192 ' + yuan(target) + ' \u5143';
@@ -690,12 +715,10 @@
         try {
           const current = parseMoney(pop.input.value);
           if (current !== old.budget) throw new Error('\u4efb\u52a1 ' + old.id + ' \u5f39\u5c42\u9884\u7b97\u4e0e\u5217\u8868\u4e0d\u4e00\u81f4');
-          const match = text(pop.box).match(/\u5f53\u524d\u6700\u591a\u53ef\u518d\u8ffd\u52a0\u9884\u7b97\s*([\d,.]+)/);
-          if (match && parseMoney(match[1]) < p.params.add) throw new Error('\u4efb\u52a1 ' + old.id + ' \u53ef\u8ffd\u52a0\u989d\u5ea6\u5c0f\u4e8e\u8bbe\u5b9a\u91d1\u989d');
           const target = old.budget + p.params.add;
           if (!Number.isSafeInteger(target)) throw new Error('\u65b0\u9884\u7b97\u91d1\u989d\u8d85\u51fa\u5b89\u5168\u8303\u56f4');
-          setInput(pop.input, yuan(target));
-          if (parseMoney(pop.input.value) !== target) throw new Error('\u4efb\u52a1 ' + old.id + ' \u7684\u65b0\u9884\u7b97\u8f93\u5165\u672a\u751f\u6548');
+          setInput(pop.input, target % 100 === 0 ? String(target / 100) : yuan(target));
+          await waitBudgetConfirm(pop, old.id, p.params.add, target);
           if (state.stop) throw new Error('\u7528\u6237\u5df2\u505c\u6b62\uff1b\u672a\u63d0\u4ea4\u4efb\u52a1 ' + old.id);
           assertLock();
           const latest=taskById(old.id);
@@ -938,7 +961,7 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
         .filter(label => !p.roiLabels.includes(label)) : [];
       const previewItems = targets.slice(0, 100).map(x => `<div class="item"><b>${esc(x.name || x.id)}</b><span class="pill">ID ${esc(x.id)}</span>${p.params.action === 'product-delete' ? `<span class="pill">\u8c03\u63a7\u7efc\u5408\u8425\u9500ROI ${Number.isFinite(x.marketingRoi) ? esc(x.marketingRoi) : x.marketingRoiDash ? '\u2014' : '\u4e0d\u53ef\u7528'}</span><span class="pill">\u8c03\u63a7\u652f\u4ed8ROI ${Number.isFinite(x.paymentRoi) ? esc(x.paymentRoi) : x.paymentRoiDash ? '\u2014' : '\u4e0d\u53ef\u7528'}</span><span class="pill">\u7efc\u5408\u6210\u672c ${yuan(x.comprehensiveCost)} \u5143</span><span class="pill">\u8c03\u63a7\u6d88\u8017 ${yuan(x.spend)} \u5143</span>` : `<span class="pill">ROI ${esc(x.roi)}</span>`}${Number.isInteger(x.budget) ? `<span class="pill">\u9884\u7b97 ${yuan(x.budget)}</span><span class="pill">\u6d88\u8017 ${yuan(x.spend)}</span>` : ''}${p.params.action === 'live-budget' ? `<span class="pill">\u62df\u6539\u4e3a ${yuan(x.budget + p.params.add)}</span>` : ''}</div>`).join('');
       shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${state.open ? 'none' : 'block'};top:${esc(state.launcherTop)}%" title="\u70b9\u51fb\u5c55\u5f00\uff0c\u62d6\u52a8\u8c03\u6574\u4f4d\u7f6e">\u8c03\u63a7\u52a9\u624b</button>
-        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>\u5343\u5ddd\u8c03\u63a7\u52a9\u624b</strong><small>v0.1.15 \u5b89\u5353\u7248 \u00b7 \u5148\u68c0\u67e5\u672c\u9875\u518d\u6267\u884c</small></div><button id="minimize" title="\u6700\u5c0f\u5316">\u2212</button></div><div class="body">
+        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>\u5343\u5ddd\u8c03\u63a7\u52a9\u624b</strong><small>v0.1.16 \u5b89\u5353\u7248 \u00b7 \u5148\u68c0\u67e5\u672c\u9875\u518d\u6267\u884c</small></div><button id="minimize" title="\u6700\u5c0f\u5316">\u2212</button></div><div class="body">
         <div class="card"><div class="eyebrow">\u9501\u5b9a\u5f53\u524d\u8ba1\u5212</div><div class="title">${esc(lock?.planName || '\u5c1a\u672a\u9501\u5b9a')}</div><div class="muted">\u8d26\u6237 ${esc(lock?.accountId || '\u2014')} \u00b7 \u8ba1\u5212 ${esc(lock?.planId || '\u2014')} \u00b7 ${lock?.kind === 'live' ? '\u63a8\u76f4\u64ad' : lock?.kind === 'product' ? '\u63a8\u5546\u54c1' : '\u672a\u8bc6\u522b'}</div>${needsRelock ? '<div class="hint warn">\u5f53\u524d\u9875\u9762\u4e0e\u5df2\u9501\u5b9a\u8ba1\u5212\u4e0d\u540c\uff0c\u8bf7\u91cd\u65b0\u9501\u5b9a\u5f53\u524d\u8ba1\u5212\u3002</div>' : ''}<div class="row"><button id="lock" class="btn" ${state.busy ? 'disabled' : ''}>\u9501\u5b9a\u5f53\u524d\u8ba1\u5212</button></div></div>
         <div class="card"><div class="eyebrow">\u7b5b\u9009\u6761\u4ef6</div><label class="field">\u672c\u6b21\u64cd\u4f5c<select id="action" ${fieldDisabled}><option value="">\u8bf7\u9009\u62e9</option>${choices}</select></label>${conditionFields}${conditionHint ? `<div class="hint">${conditionHint}</div>` : ''}</div>
         <div class="card"><div class="eyebrow">\u6267\u884c\u672c\u9875</div><div class="hint warn">\u5148\u68c0\u67e5\u5e76\u6838\u5bf9\u4efb\u52a1\u6e05\u5355\uff0c\u518d\u70b9\u51fb\u6267\u884c\u3002\u76f4\u64ad\u5220\u9664\u4ec5\u52fe\u9009\u672c\u9875\u5408\u683c\u4efb\u52a1\u5e76\u6279\u91cf\u5220\u9664\uff1b\u5546\u54c1\u5220\u9664\u9010\u6761\u6267\u884c\uff1b\u9884\u7b97\u9010\u6761\u6539\u4e3a\u5f53\u524d\u503c\u52a0\u8bbe\u5b9a\u91d1\u989d\u3002\u53ef\u5148\u5728\u5343\u5ddd\u9009 100 \u6761/\u9875\uff1b\u8de8\u9875\u8bf7\u9010\u9875\u68c0\u67e5\u3002\u5220\u9664\u540e\u4e0d\u53ef\u6062\u590d\u3002</div><div class="row"><button id="preview" class="btn" ${state.busy || !lock ? 'disabled' : ''}>\u68c0\u67e5\u672c\u9875</button><button id="execute" class="btn primary" ${state.busy || !p?.targets.length ? 'disabled' : ''}>\u6267\u884c\u672c\u9875 ${targets.length} \u6761</button><button id="stop" class="btn stop" ${state.busy ? '' : 'disabled'}>\u505c\u6b62</button></div>${p?.targets.length ? '<label class="check"><input id="ack" type="checkbox">\u6211\u5df2\u6838\u5bf9\u4e0b\u65b9\u4efb\u52a1 ID\u3001ROI \u548c\u91d1\u989d\uff0c\u786e\u8ba4\u6267\u884c\u672c\u9875\u64cd\u4f5c</label>' : ''}</div>

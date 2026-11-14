@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         千川调控助手
 // @namespace    local.qianchuan.task-governor
-// @version      0.1.12
+// @version      0.1.13
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js
 // @description  直播高ROI任务追加预算，支持因任务预算不足暂停的任务；低ROI删除；先检查本页再执行
@@ -151,6 +151,37 @@
       }
       return d;
     }
+    const PLAN_ROI_DEFAULTS = Object.freeze({
+      product: Object.freeze({
+        '1852467269069907': '1.5', '1867759385277658': '1.5',
+        '1874562792641564': '1.5', '1871602977211450': '1.5',
+        '1867205504686219': '1.5', '1861549677969523': '2.2',
+        '1840851764337800': '2', '1832800495529143': '2.3',
+        '1832698672535955': '2.3', '1832698376359401': '2.3'
+      }),
+      live: Object.freeze({ '1832698106712151': '2.3', '1837421927864619': '1.5' })
+    });
+    function defaultsScope(lock) { return [lock.accountId, lock.kind, lock.planId].join(':'); }
+    function applyPlanDefaults(lock) {
+      cfg.productRoi = lock.kind === 'product' ? PLAN_ROI_DEFAULTS.product[lock.planId] || '' : '';
+      cfg.liveDeleteRoi = lock.kind === 'live' ? PLAN_ROI_DEFAULTS.live[lock.planId] || '' : '';
+      if (lock.kind === 'product') cfg.action = 'product-delete';
+      else if (!['live-delete', 'live-budget'].includes(cfg.action)) cfg.action = '';
+      cfg.planDefaultsScope = defaultsScope(lock);
+      state.preview = null;
+      GM_setValue(CFG_KEY, cfg);
+    }
+    function changeAction(action) {
+      if (state.busy) return;
+      cfg.action = action;
+      if (action === 'live-delete' && state.lock?.kind === 'live') {
+        cfg.liveDeleteRoi = PLAN_ROI_DEFAULTS.live[state.lock.planId] || '';
+      }
+      state.preview = null;
+      GM_setValue(CFG_KEY, cfg);
+      render();
+    }
+    if (state.lock && cfg.planDefaultsScope !== defaultsScope(state.lock)) applyPlanDefaults(state.lock);
     function lockCurrent() {
       try {
         if (state.busy) throw new Error('正在执行，暂不能更换计划');
@@ -158,6 +189,7 @@
         const d = detailIdentity();
         state.lock = { accountId: d.accountId, planId: d.planId,
           planName: d.planName, kind: d.kind };
+        applyPlanDefaults(state.lock);
         if (tabToken) GM_setValue(LOCK_PREFIX + tabToken, state.lock);
         state.preview = null;
         phase('已锁定' + (d.kind === 'live' ? '推直播' : '推商品') + '计划');
@@ -609,7 +641,7 @@
         lock.planId !== current.planId || lock.kind !== current.kind);
       const live = kind === 'live';
       const choices = live ? `<option value="live-delete">直播低 ROI 批量删除</option><option value="live-budget">直播高 ROI 追加预算</option>` :
-        `<option value="product-delete">商品低 ROI 逐条删除</option>`;
+        `<option value="product-delete">商品低 ROI 批量删除（逐条执行）</option>`;
       const action = cfg.action && ((live && cfg.action.startsWith('live-')) || (!live && cfg.action === 'product-delete')) ? cfg.action : '';
       const fieldDisabled = state.busy ? 'disabled' : '';
       const conditionFields = action === 'live-delete' ?
@@ -627,15 +659,15 @@
         .filter(label => !p.roiLabels.includes(label)) : [];
       const previewItems = targets.slice(0, 100).map(x => `<div class="item"><b>${esc(x.name || x.id)}</b><span class="pill">ID ${esc(x.id)}</span>${p.params.action === 'product-delete' ? `<span class="pill">调控综合营销ROI ${Number.isFinite(x.marketingRoi) ? esc(x.marketingRoi) : x.marketingRoiDash ? '—' : '不可用'}</span><span class="pill">调控支付ROI ${Number.isFinite(x.paymentRoi) ? esc(x.paymentRoi) : x.paymentRoiDash ? '—' : '不可用'}</span><span class="pill">综合成本 ${yuan(x.comprehensiveCost)} 元</span><span class="pill">调控消耗 ${yuan(x.spend)} 元</span>` : `<span class="pill">ROI ${esc(x.roi)}</span>`}${Number.isInteger(x.budget) ? `<span class="pill">预算 ${yuan(x.budget)}</span><span class="pill">消耗 ${yuan(x.spend)}</span>` : ''}${p.params.action === 'live-budget' ? `<span class="pill">拟改为 ${yuan(x.budget + p.params.add)}</span>` : ''}</div>`).join('');
       shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${state.open ? 'none' : 'block'};top:${esc(state.launcherTop)}%" title="点击展开，拖动调整位置">调控助手</button>
-        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>千川调控助手</strong><small>v0.1.12 · 默认静默最小化</small></div><button id="minimize" title="最小化">−</button></div><div class="body">
+        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>千川调控助手</strong><small>v0.1.13 · 按计划预填 ROI · 默认静默最小化</small></div><button id="minimize" title="最小化">−</button></div><div class="body">
         <div class="card"><div class="eyebrow">锁定当前计划</div><div class="title">${esc(lock?.planName || '尚未锁定')}</div><div class="muted">账户 ${esc(lock?.accountId || '—')} · 计划 ${esc(lock?.planId || '—')} · ${lock?.kind === 'live' ? '推直播' : lock?.kind === 'product' ? '推商品' : '未识别'}</div>${needsRelock ? '<div class="hint warn">当前页面与已锁定计划不同，请重新锁定当前计划。</div>' : ''}<div class="row"><button id="lock" class="btn" ${state.busy ? 'disabled' : ''}>锁定当前计划</button></div></div>
-        <div class="card"><div class="eyebrow">筛选条件</div><label class="field">本次操作<select id="action" ${fieldDisabled}><option value="">请选择</option>${choices}</select></label>${conditionFields}${conditionHint ? `<div class="hint">${conditionHint}</div>` : ''}</div>
+        <div class="card"><div class="eyebrow">筛选条件</div><label class="field">本次操作<select id="action" ${fieldDisabled}><option value="">请选择</option>${choices}</select></label>${conditionFields}<div class="hint">锁定商品计划时自动选择低 ROI 删除；名单内预填 ROI，名单外留空。可手动修改；重新锁定或重新选择直播低 ROI 删除会恢复默认值。</div>${conditionHint ? `<div class="hint">${conditionHint}</div>` : ''}</div>
         <div class="card"><div class="eyebrow">执行本页</div><div class="hint warn">先检查并核对任务清单，再点击执行。直播删除仅勾选本页合格任务并批量删除；商品删除逐条执行；预算逐条改为当前值加设定金额。可先在千川选 100 条/页；跨页请逐页检查。删除后不可恢复。</div><div class="row"><button id="preview" class="btn" ${state.busy || !lock ? 'disabled' : ''}>检查本页</button><button id="execute" class="btn primary" ${state.busy || !p?.targets.length ? 'disabled' : ''}>执行本页 ${targets.length} 条</button><button id="stop" class="btn stop" ${state.busy ? '' : 'disabled'}>停止</button></div>${p?.targets.length ? '<label class="check"><input id="ack" type="checkbox">我已核对下方任务 ID、ROI 和金额，确认执行本页操作</label>' : ''}</div>
         <div class="card"><div class="eyebrow">执行状态</div><div class="status">${esc(state.phase)}</div>${p ? `<div class="hint">第 ${esc(p.page)} 页 · ${esc(p.size || '当前条数')} · ROI 列：${esc(p.roiLabels.join('、'))} · 预览于 ${new Date(p.at).toLocaleTimeString('zh-CN', { hour12: false })}</div>${missingProductRoi.length ? `<div class="hint warn">当前表格未显示：${esc(missingProductRoi.join('、'))}；这些指标不参与判定。</div>` : ''}<div style="max-height:240px;overflow:auto;margin-top:8px">${previewItems || '<div class="muted">本页没有符合条件的任务</div>'}</div>` : '<div class="hint">尚未生成本页预览</div>'}</div>
         <div class="card"><div class="eyebrow">执行记录</div><div class="log">${esc(state.logs.join('\n') || '尚无记录')}</div></div><div class="card"><div class="eyebrow">结果报告</div><div class="report">${esc(state.report || '执行后生成报告')}</div><div class="row"><button id="copy" class="btn">复制报告</button></div></div></div></div>`;
       const actionInput = shadow.getElementById('action');
       actionInput.value = action;
-      actionInput.onchange = e => { cfg.action = e.target.value; state.preview = null; GM_setValue(CFG_KEY, cfg); render(); };
+      actionInput.onchange = e => { changeAction(e.target.value); };
       for (const [key, id] of [['liveDeleteRoi', 'live-delete-roi'], ['liveBudgetRoi', 'live-budget-roi'],
         ['gap', 'gap'], ['add', 'add'], ['productRoi', 'product-roi']]) {
         const input = shadow.getElementById(id);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Task Governor (Android)
 // @namespace    local.qianchuan.task-governor
-// @version      0.1.17
+// @version      0.1.18
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js
 // @description  Android-compatible task governor; preview and verify each page before deleting tasks or increasing budgets.
@@ -191,6 +191,37 @@
       }
       return d;
     }
+    const PLAN_ROI_DEFAULTS = Object.freeze({
+      product: Object.freeze({
+        '1852467269069907': '1.5', '1867759385277658': '1.5',
+        '1874562792641564': '1.5', '1871602977211450': '1.5',
+        '1867205504686219': '1.5', '1861549677969523': '2.2',
+        '1840851764337800': '2', '1832800495529143': '2.3',
+        '1832698672535955': '2.3', '1832698376359401': '2.3'
+      }),
+      live: Object.freeze({ '1832698106712151': '2.3', '1837421927864619': '1.5' })
+    });
+    function defaultsScope(lock) { return [lock.accountId, lock.kind, lock.planId].join(':'); }
+    function applyPlanDefaults(lock) {
+      cfg.productRoi = lock.kind === 'product' ? PLAN_ROI_DEFAULTS.product[lock.planId] || '' : '';
+      cfg.liveDeleteRoi = lock.kind === 'live' ? PLAN_ROI_DEFAULTS.live[lock.planId] || '' : '';
+      if (lock.kind === 'product') cfg.action = 'product-delete';
+      else if (!['live-delete', 'live-budget'].includes(cfg.action)) cfg.action = '';
+      cfg.planDefaultsScope = defaultsScope(lock);
+      state.preview = null;
+      GM_setValue(CFG_KEY, cfg);
+    }
+    function changeAction(action) {
+      if (state.busy) return;
+      cfg.action = action;
+      if (action === 'live-delete' && state.lock?.kind === 'live') {
+        cfg.liveDeleteRoi = PLAN_ROI_DEFAULTS.live[state.lock.planId] || '';
+      }
+      state.preview = null;
+      GM_setValue(CFG_KEY, cfg);
+      render();
+    }
+    if (state.lock && cfg.planDefaultsScope !== defaultsScope(state.lock)) applyPlanDefaults(state.lock);
     function lockCurrent() {
       try {
         if (state.busy) throw new Error('\u6b63\u5728\u6267\u884c\uff0c\u6682\u4e0d\u80fd\u66f4\u6362\u8ba1\u5212');
@@ -198,6 +229,7 @@
         const d = detailIdentity();
         state.lock = { accountId: d.accountId, planId: d.planId,
           planName: d.planName, kind: d.kind };
+        applyPlanDefaults(state.lock);
         if (tabToken) GM_setValue(LOCK_PREFIX + tabToken, state.lock);
         state.preview = null;
         phase('\u5df2\u9501\u5b9a' + (d.kind === 'live' ? '\u63a8\u76f4\u64ad' : '\u63a8\u5546\u54c1') + '\u8ba1\u5212');
@@ -954,7 +986,7 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
         lock.planId !== current.planId || lock.kind !== current.kind);
       const live = kind === 'live';
       const choices = live ? `<option value="live-delete">\u76f4\u64ad\u4f4e ROI \u6279\u91cf\u5220\u9664</option><option value="live-budget">\u76f4\u64ad\u9ad8 ROI \u8ffd\u52a0\u9884\u7b97</option>` :
-        `<option value="product-delete">\u5546\u54c1\u4f4e ROI \u9010\u6761\u5220\u9664</option>`;
+        `<option value="product-delete">商品低 ROI 批量删除（逐条执行）</option>`;
       const action = cfg.action && ((live && cfg.action.startsWith('live-')) || (!live && cfg.action === 'product-delete')) ? cfg.action : '';
       const fieldDisabled = state.busy ? 'disabled' : '';
       const conditionFields = action === 'live-delete' ?
@@ -972,15 +1004,15 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
         .filter(label => !p.roiLabels.includes(label)) : [];
       const previewItems = targets.slice(0, 100).map(x => `<div class="item"><b>${esc(x.name || x.id)}</b><span class="pill">ID ${esc(x.id)}</span>${p.params.action === 'product-delete' ? `<span class="pill">\u8c03\u63a7\u7efc\u5408\u8425\u9500ROI ${Number.isFinite(x.marketingRoi) ? esc(x.marketingRoi) : x.marketingRoiDash ? '\u2014' : '\u4e0d\u53ef\u7528'}</span><span class="pill">\u8c03\u63a7\u652f\u4ed8ROI ${Number.isFinite(x.paymentRoi) ? esc(x.paymentRoi) : x.paymentRoiDash ? '\u2014' : '\u4e0d\u53ef\u7528'}</span><span class="pill">\u7efc\u5408\u6210\u672c ${yuan(x.comprehensiveCost)} \u5143</span><span class="pill">\u8c03\u63a7\u6d88\u8017 ${yuan(x.spend)} \u5143</span>` : `<span class="pill">ROI ${esc(x.roi)}</span>`}${Number.isInteger(x.budget) ? `<span class="pill">\u9884\u7b97 ${yuan(x.budget)}</span><span class="pill">\u6d88\u8017 ${yuan(x.spend)}</span>` : ''}${p.params.action === 'live-budget' ? `<span class="pill">\u62df\u6539\u4e3a ${yuan(x.budget + p.params.add)}</span>` : ''}</div>`).join('');
       shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${state.open ? 'none' : 'block'};top:${esc(state.launcherTop)}%" title="\u70b9\u51fb\u5c55\u5f00\uff0c\u62d6\u52a8\u8c03\u6574\u4f4d\u7f6e">\u8c03\u63a7\u52a9\u624b</button>
-        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>\u5343\u5ddd\u8c03\u63a7\u52a9\u624b</strong><small>v0.1.17 \u5b89\u5353\u7248 \u00b7 \u5148\u68c0\u67e5\u672c\u9875\u518d\u6267\u884c</small></div><button id="minimize" title="\u6700\u5c0f\u5316">\u2212</button></div><div class="body">
+        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>\u5343\u5ddd\u8c03\u63a7\u52a9\u624b</strong><small>v0.1.18 \u5b89\u5353\u7248 \u00b7 \u5148\u68c0\u67e5\u672c\u9875\u518d\u6267\u884c</small></div><button id="minimize" title="\u6700\u5c0f\u5316">\u2212</button></div><div class="body">
         <div class="card"><div class="eyebrow">\u9501\u5b9a\u5f53\u524d\u8ba1\u5212</div><div class="title">${esc(lock?.planName || '\u5c1a\u672a\u9501\u5b9a')}</div><div class="muted">\u8d26\u6237 ${esc(lock?.accountId || '\u2014')} \u00b7 \u8ba1\u5212 ${esc(lock?.planId || '\u2014')} \u00b7 ${lock?.kind === 'live' ? '\u63a8\u76f4\u64ad' : lock?.kind === 'product' ? '\u63a8\u5546\u54c1' : '\u672a\u8bc6\u522b'}</div>${needsRelock ? '<div class="hint warn">\u5f53\u524d\u9875\u9762\u4e0e\u5df2\u9501\u5b9a\u8ba1\u5212\u4e0d\u540c\uff0c\u8bf7\u91cd\u65b0\u9501\u5b9a\u5f53\u524d\u8ba1\u5212\u3002</div>' : ''}<div class="row"><button id="lock" class="btn" ${state.busy ? 'disabled' : ''}>\u9501\u5b9a\u5f53\u524d\u8ba1\u5212</button></div></div>
-        <div class="card"><div class="eyebrow">\u7b5b\u9009\u6761\u4ef6</div><label class="field">\u672c\u6b21\u64cd\u4f5c<select id="action" ${fieldDisabled}><option value="">\u8bf7\u9009\u62e9</option>${choices}</select></label>${conditionFields}${conditionHint ? `<div class="hint">${conditionHint}</div>` : ''}</div>
+        <div class="card"><div class="eyebrow">\u7b5b\u9009\u6761\u4ef6</div><label class="field">\u672c\u6b21\u64cd\u4f5c<select id="action" ${fieldDisabled}><option value="">\u8bf7\u9009\u62e9</option>${choices}</select></label>${conditionFields}<div class="hint">锁定商品计划时自动选择低 ROI 删除；名单内预填 ROI，名单外留空。可手动修改；重新锁定或重新选择直播低 ROI 删除会恢复默认值。</div>${conditionHint ? `<div class="hint">${conditionHint}</div>` : ''}</div>
         <div class="card"><div class="eyebrow">\u6267\u884c\u672c\u9875</div><div class="hint warn">\u5148\u68c0\u67e5\u5e76\u6838\u5bf9\u4efb\u52a1\u6e05\u5355\uff0c\u518d\u70b9\u51fb\u6267\u884c\u3002\u76f4\u64ad\u5220\u9664\u4ec5\u52fe\u9009\u672c\u9875\u5408\u683c\u4efb\u52a1\u5e76\u6279\u91cf\u5220\u9664\uff1b\u5546\u54c1\u5220\u9664\u9010\u6761\u6267\u884c\uff1b\u9884\u7b97\u9010\u6761\u6539\u4e3a\u5f53\u524d\u503c\u52a0\u8bbe\u5b9a\u91d1\u989d\u3002\u53ef\u5148\u5728\u5343\u5ddd\u9009 100 \u6761/\u9875\uff1b\u8de8\u9875\u8bf7\u9010\u9875\u68c0\u67e5\u3002\u5220\u9664\u540e\u4e0d\u53ef\u6062\u590d\u3002</div><div class="row"><button id="preview" class="btn" ${state.busy || !lock ? 'disabled' : ''}>\u68c0\u67e5\u672c\u9875</button><button id="execute" class="btn primary" ${state.busy || !p?.targets.length ? 'disabled' : ''}>\u6267\u884c\u672c\u9875 ${targets.length} \u6761</button><button id="stop" class="btn stop" ${state.busy ? '' : 'disabled'}>\u505c\u6b62</button></div>${p?.targets.length ? '<label class="check"><input id="ack" type="checkbox">\u6211\u5df2\u6838\u5bf9\u4e0b\u65b9\u4efb\u52a1 ID\u3001ROI \u548c\u91d1\u989d\uff0c\u786e\u8ba4\u6267\u884c\u672c\u9875\u64cd\u4f5c</label>' : ''}</div>
         <div class="card"><div class="eyebrow">\u6267\u884c\u72b6\u6001</div><div class="status">${esc(state.phase)}</div>${p ? `<div class="hint">\u7b2c ${esc(p.page)} \u9875 \u00b7 ${esc(p.size || '\u5f53\u524d\u6761\u6570')} \u00b7 ROI \u5217\uff1a${esc(p.roiLabels.join('\u3001'))} \u00b7 \u9884\u89c8\u4e8e ${new Date(p.at).toLocaleTimeString('zh-CN', { hour12: false })}</div>${missingProductRoi.length ? `<div class="hint warn">\u5f53\u524d\u8868\u683c\u672a\u663e\u793a\uff1a${esc(missingProductRoi.join('\u3001'))}\uff1b\u8fd9\u4e9b\u6307\u6807\u4e0d\u53c2\u4e0e\u5224\u5b9a\u3002</div>` : ''}<div style="max-height:240px;overflow:auto;margin-top:8px">${previewItems || '<div class="muted">\u672c\u9875\u6ca1\u6709\u7b26\u5408\u6761\u4ef6\u7684\u4efb\u52a1</div>'}</div>` : '<div class="hint">\u5c1a\u672a\u751f\u6210\u672c\u9875\u9884\u89c8</div>'}</div>
         <div class="card"><div class="eyebrow">\u6267\u884c\u8bb0\u5f55</div><div class="log">${esc(state.logs.join('\n') || '\u5c1a\u65e0\u8bb0\u5f55')}</div></div><div class="card"><div class="eyebrow">\u7ed3\u679c\u62a5\u544a</div><div class="report">${esc(state.report || '\u6267\u884c\u540e\u751f\u6210\u62a5\u544a')}</div><div class="row"><button id="copy" class="btn">\u590d\u5236\u62a5\u544a</button></div></div></div></div>`;
       const actionInput = shadow.getElementById('action');
       actionInput.value = action;
-      actionInput.onchange = e => { cfg.action = e.target.value; state.preview = null; GM_setValue(CFG_KEY, cfg); render(); };
+      actionInput.onchange = e => { changeAction(e.target.value); };
       for (const [key, id] of [['liveDeleteRoi', 'live-delete-roi'], ['liveBudgetRoi', 'live-budget-roi'],
         ['gap', 'gap'], ['add', 'add'], ['productRoi', 'product-roi']]) {
         const input = shadow.getElementById(id);

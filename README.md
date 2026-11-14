@@ -7,7 +7,7 @@
 | 千川助手 | Windows | 安卓 |
 | --- | --- | --- |
 | 直播定时调速 | [v1.2.4](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js) | [v1.2.7](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js) |
-| 调控 | [v0.1.12](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js) | [v0.1.17](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js) |
+| 调控 | [v0.1.13](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js) | [v0.1.18](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js) |
 | 素材追投 | [v0.4.36](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js) | [v0.4.38](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js) |
 | 零消耗素材清理 | [v1.1.5](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-windows.user.js) | [v1.1.7](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-android.user.js) |
 
@@ -20,6 +20,27 @@
 
 主页带货发布助手默认收起，点击页面右侧的「发布助手」即可展开。上传和商品动态选择器需要按页面校准，首次运行可使用默认的试跑模式。逐单加热助手由用户手动完成每一单的支付。
 
+## 调控助手：按计划 ID 预填默认值
+
+Windows `v0.1.13` / 安卓 `v0.1.18`：锁定推商品计划后，默认选择「商品低 ROI 批量删除（逐条执行）」并预填下表 ROI。锁定直播计划时保留适用的直播操作；选择「直播低 ROI 批量删除」后预填直播默认 ROI，不改变直播追加预算的 ROI、差值和追加金额。
+
+| 计划类型 | 计划 ID | 默认 ROI |
+| --- | --- | --- |
+| 推商品 | `1852467269069907` | 1.5 |
+| 推商品 | `1867759385277658` | 1.5 |
+| 推商品 | `1874562792641564` | 1.5 |
+| 推商品 | `1871602977211450` | 1.5 |
+| 推商品 | `1867205504686219` | 1.5 |
+| 推商品 | `1861549677969523` | 2.2 |
+| 推商品 | `1840851764337800` | 2 |
+| 推商品 | `1832800495529143` | 2.3 |
+| 推商品 | `1832698672535955` | 2.3 |
+| 推商品 | `1832698376359401` | 2.3 |
+| 直播低 ROI 删除 | `1832698106712151` | 2.3 |
+| 直播低 ROI 删除 | `1837421927864619` | 1.5 |
+
+名单外 ID 的删除 ROI 留空，必须手动填写，不继承其他计划的值。默认值可手动改写；普通重绘、检查本页和刷新同一已绑定计划不会覆盖手动值。重新点击「锁定当前计划」会恢复该计划默认值；重新选择「直播低 ROI 批量删除」会恢复直播默认值。旧版恢复锁定或账号/类型/计划绑定变化时重新应用默认值，防止跨计划误用阈值。预填不会自动检查或执行，商品删除仍逐条核对、逐条执行。
+
 ## 调控助手：共用 ROI 阈值
 
 Windows `v0.1.12` / 安卓 `v0.1.17` 的商品调控只需输入一个「调控 ROI 阈值」：自动按当前任务表显示的「调控综合营销ROI」或「调控支付ROI」判定；两列都显示时共用此阈值，保留原来任一已显示列低于阈值或为「—」即入选的规则，不相加、不取平均。未显示列不参与判断，综合成本和调控消耗必须均大于零；仍需先检查清单，再确认执行。
@@ -28,7 +49,7 @@ Windows `v0.1.12` / 安卓 `v0.1.17` 的商品调控只需输入一个「调控 
 
 ## 本地验证
 
-在仓库根目录运行 `node --test` 可执行调控助手共用 ROI 阈值与视频号逐单加热助手的离线回归测试。调控测试覆盖统一输入、ROI 字段判定、成本消耗保护、输入校验和旧配置迁移。
+在仓库根目录运行 `node --test` 可执行调控助手与视频号逐单加热助手的离线回归测试。调控测试覆盖逐个计划默认值、默认操作、名单外留空、计划切换/重锁/刷新、统一输入、ROI 字段判定、成本消耗保护、输入校验和旧配置迁移。
 
 ```sh
 node --check qianchuan-task-governor-windows.user.js

@@ -7,7 +7,7 @@
 | 千川助手 | Windows | 安卓 |
 | --- | --- | --- |
 | 直播定时调速 | [v1.2.4](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js) | [v1.2.7](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js) |
-| 调控 | [v0.1.11](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js) | [v0.1.16](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js) |
+| 调控 | [v0.1.12](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js) | [v0.1.17](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js) |
 | 素材追投 | [v0.4.36](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js) | [v0.4.38](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js) |
 | 零消耗素材清理 | [v1.1.5](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-windows.user.js) | [v1.1.7](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-android.user.js) |
 
@@ -20,11 +20,19 @@
 
 主页带货发布助手默认收起，点击页面右侧的「发布助手」即可展开。上传和商品动态选择器需要按页面校准，首次运行可使用默认的试跑模式。逐单加热助手由用户手动完成每一单的支付。
 
+## 调控助手：共用 ROI 阈值
+
+Windows `v0.1.12` / 安卓 `v0.1.17` 的商品调控只需输入一个「调控 ROI 阈值」：自动按当前任务表显示的「调控综合营销ROI」或「调控支付ROI」判定；两列都显示时共用此阈值，保留原来任一已显示列低于阈值或为「—」即入选的规则，不相加、不取平均。未显示列不参与判断，综合成本和调控消耗必须均大于零；仍需先检查清单，再确认执行。
+
+旧版两项阈值相同或只保存一项时自动继承；两项不同则留空，必须重新填写，避免擅自改变删除门槛。直播删除和追加预算的独立设置不变。没有对真实广告任务执行删除或追加预算。
+
 ## 本地验证
 
-在仓库根目录运行 `node --test` 可执行视频号逐单加热助手的回归测试。测试覆盖来源订单定位、名称与预算、优惠券和支付结果核对。
+在仓库根目录运行 `node --test` 可执行调控助手共用 ROI 阈值与视频号逐单加热助手的离线回归测试。调控测试覆盖统一输入、ROI 字段判定、成本消耗保护、输入校验和旧配置迁移。
 
 ```sh
+node --check qianchuan-task-governor-windows.user.js
+node --check qianchuan-task-governor-android.user.js
 node --check "视频号标准订单逐单加热助手.user.js"
 node --test
 ```

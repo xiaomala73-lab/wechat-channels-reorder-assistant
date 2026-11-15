@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         千川直播定时一键调速助手
 // @namespace    local.qianchuan.live-speed-scheduler
-// @version      1.2.4
+// @version      1.2.5
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js
 // @description  当前直播计划定时调速；提交后容忍后台页面延迟，自动多次核对已建任务，禁止重复提交
@@ -357,13 +357,16 @@
     const footer = footers[0] || null;
     return { data, footer };
   }
+  function isEmptyTaskText(value) {
+    return /(?:共\s*0\s*条|暂无.{0,16}(?:数据|任务|记录)|未查询到.{0,16}(?:数据|任务|记录)|没有.{0,12}(?:数据|任务|记录))/.test(String(value || ''));
+  }
   function emptyTaskList(drawer, table) {
     if (table.data && taskRows(table.data).length) return false;
     const panel = drawer.querySelector('[id$="-panel-uni_task_center"]') || drawer;
     const labels = [panel, table.footer, ...panel.querySelectorAll(
       '.main-vmok-plugin-page-total, .main-vmok-plugin-empty, .main-vmok-plugin-table-empty, ' +
       '[class*="empty"], tbody td[colspan]')].filter(visible);
-    return labels.some(el => /共\s*0\s*条|暂无(?:数据|任务|记录)|没有(?:数据|任务|记录)/.test(text(el)));
+    return labels.some(el => isEmptyTaskText(text(el)));
   }
   function taskListReady(drawer) {
     const table = taskTable(drawer);
@@ -373,7 +376,7 @@
     if (!data) return [];
     return Array.from(data.querySelectorAll('tbody tr.main-vmok-plugin-tr')).map(tr => {
       const cells = Array.from(tr.querySelectorAll(':scope > td'));
-      if (cells.length < 8 && /共\s*0\s*条|暂无(?:数据|任务|记录)|没有(?:数据|任务|记录)/.test(text(tr))) return null;
+      if (cells.length < 8 && isEmptyTaskText(text(tr))) return null;
       if (cells.length < 8) throw new Error('调控任务列数异常');
       const nameCell = text(cells[1]), id = (nameCell.match(/ID[：:]\s*(\d+)/) || [])[1];
       const name = nameCell.replace(/\s*ID[：:]\s*\d+[\s\S]*$/, '').trim();

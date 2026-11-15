@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Zero Cost Material Cleaner (Android)
 // @namespace    local.qianchuan.empty-cost-cleaner
-// @version      1.1.7
+// @version      1.1.8
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-android.user.js
 // @description  Android empty-cost cleanup; resume batch deletion after AIGC tagging, with final-row protection.
@@ -121,11 +121,11 @@
       }
     } else {
       if (!document.querySelector('[id$="-tab-1"][aria-selected="true"]')) throw new Error('\u5F53\u524D\u4E0D\u662F\u5546\u54C1\u81EA\u9009\u8BA1\u5212');
-      const active = Array.from(document.querySelectorAll('[role="tab"][aria-selected="true"]')).map(text);
+      const active = Array.from(document.querySelectorAll('[role="tab"][aria-selected="true"]')).filter(visible).map(text);
       const oldSelfSelect = active.includes('\u5546\u54C1\u81EA\u9009');
       const newSelfSelect = active.includes('\u8BA1\u5212\u89C6\u56FE') && Array.from(document.querySelectorAll('label')).some(label =>
         visible(label) && text(label) === '\u5546\u54C1\u81EA\u9009' && label.querySelector('input[type="radio"]')?.checked);
-      if (!active.includes('\u5546\u54C1') || !(oldSelfSelect || newSelfSelect)) throw new Error('\u5F53\u524D\u4E0D\u662F\u5546\u54C1\u81EA\u9009\u8BA1\u5212\uFF08\u517C\u5BB9\u8BA1\u5212\u89C6\u56FE\u65B0\u7248\u5165\u53E3\uFF09');
+      if (!active.includes('\u5546\u54C1') || !(oldSelfSelect || newSelfSelect)) throw new Error('\u8BF7\u6253\u5F00\u5546\u54C1\u2192\u8BA1\u5212\u89C6\u56FE\u2192\u5546\u54C1\u81EA\u9009\uFF08\u65E7\u7248\uFF1A\u5546\u54C1\u2192\u5546\u54C1\u81EA\u9009\uFF09');
     }
     if (!ignoreLock && (!state.lock || state.lock.accountId !== accountId || state.lock.planId !== planId ||
       state.lock.planName !== planName ||
@@ -1013,7 +1013,7 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
     const planLabel = live ? '\u76F4\u64AD\u5728\u6295\u8BA1\u5212' : '\u5546\u54C1\u5728\u6295\u8BA1\u5212';
     const sourceLabel = live ? '\u89C6\u9891\u7C7B\u578B\u4E3A\u81EA\u9009\u6295\u653E\u89C6\u9891' : '\u7D20\u6750\u7C7B\u578B\u4E3A\u81EA\u9009\u6295\u653E\u7D20\u6750';
     shadow.innerHTML = css + `<button class="launcher" id="launch" title="\u70B9\u51FB\u5C55\u5F00\uFF0C\u62D6\u52A8\u8C03\u6574\u4F4D\u7F6E" aria-label="\u5C55\u5F00\u5343\u5DDD\u96F6\u6D88\u8017\u7D20\u6750\u6E05\u7406\u52A9\u624B" style="display:${state.panelOpen?'none':'block'};top:${escapeHTML(state.launcherTop)}%">\u6E05\u7406\u52A9\u624B</button>
-      <div class="panel" style="display:${state.panelOpen?'flex':'none'}"><div class="head"><div><strong>\u5343\u5DDD\u96F6\u6D88\u8017\u7D20\u6750\u6E05\u7406\u52A9\u624B</strong><small>v1.1.6 \u5B89\u5353\u7248 \u00B7 ${planLabel} \u00B7 \u81EA\u9009\u6295\u653E\u89C6\u9891</small></div><button id="close" title="\u6700\u5C0F\u5316" aria-label="\u6700\u5C0F\u5316\u52A9\u624B">\u2212</button></div><div class="body">
+      <div class="panel" style="display:${state.panelOpen?'flex':'none'}"><div class="head"><div><strong>\u5343\u5DDD\u96F6\u6D88\u8017\u7D20\u6750\u6E05\u7406\u52A9\u624B</strong><small>v1.1.8 \u5B89\u5353\u7248 \u00B7 ${planLabel} \u00B7 \u81EA\u9009\u6295\u653E\u89C6\u9891</small></div><button id="close" title="\u6700\u5C0F\u5316" aria-label="\u6700\u5C0F\u5316\u52A9\u624B">\u2212</button></div><div class="body">
       <div class="card"><div class="eyebrow">\u9501\u5B9A\u8D26\u6237 / \u5F53\u524D\u8BA1\u5212</div><div class="title">${lock?escapeHTML(lock.accountName):'\u5C1A\u672A\u9501\u5B9A'}</div><div class="muted">${lock?escapeHTML(lock.accountId):''}</div><div class="title" style="margin-top:6px">${lock?escapeHTML(lock.planName):'\u8BF7\u5148\u6253\u5F00\u7D20\u6750\u9875'}</div><div class="muted">${lock?escapeHTML(lock.planId):''}</div><div class="row"><button class="btn" id="lock" ${state.busy?'disabled':''}>\u9501\u5B9A\u5F53\u524D\u8BA1\u5212</button></div></div>
       <div class="card"><div class="eyebrow">\u7B5B\u9009\u6761\u4EF6</div><div class="grid"><label class="field">\u521B\u5EFA\u65E5\u671F\u4E25\u683C\u65E9\u4E8E<input id="cutoff" type="date" value="${escapeHTML(cfg.cutoff)}" ${state.busy?'disabled':''}></label><label class="field">\u6700\u591A\u5220\u9664\u6761\u6570<input id="quota" type="number" min="1" max="${MAX_QUOTA}" step="1" value="${escapeHTML(cfg.quota)}" ${state.busy?'disabled':''}></label></div><div class="hint">${live?'\u76F4\u64AD\u7D20\u6750\u2192\u89C6\u9891\u9875\u7B5B\u9009\u201C\u89C6\u9891\u7C7B\u578B\uFF1A\u81EA\u9009\u6295\u653E\u89C6\u9891\u201D':'\u5546\u54C1\u7D20\u6750\u9875\u7B5B\u9009\u201C\u7D20\u6750\u7C7B\u578B\uFF1A\u81EA\u9009\u6295\u653E\u201D'}\uFF0C20 \u6761/\u9875\uFF1B\u6309<strong>\u7EFC\u5408\u6210\u672C(\u5143)\u964D\u5E8F</strong>\u4ECE\u672B\u9875\u5F80\u524D\u68C0\u67E5\u3002\u4EC5\u5220\u6210\u672C\u4E3A\u7A7A\uFF08-\u3001--\u3001\u6682\u65E0\u6570\u636E\u6216\u7A7A\u767D\uFF09\u3001\u65E5\u671F\u65E9\u4E8E\u622A\u6B62\u65E5\u3001\u4E14\u65E0 AIGC\u8DD1\u91CF \u6807\u7B7E\u7684\u7D20\u6750\u3002</div></div>
       <div class="card"><div class="eyebrow">\u6267\u884C</div><div class="hint warn">\u5148\u6F14\u7EC3\u67E5\u770B\u672B\u9875\u5019\u9009\u3002\u672B\u9875\u5168\u90E8\u5408\u683C\u65F6\u4FDD\u7559\u6700\u540E\u4E00\u6761\uFF0C\u907F\u514D\u5220\u9664\u540E\u7A7A\u9875\uFF1B\u5176\u4F59\u5408\u683C\u7D20\u6750\u4F18\u5148\u6574\u6279\u5904\u7406\u3002\u51FA\u73B0 AIGC \u8B66\u544A\u5219\u53D6\u6D88\u672C\u6279\uFF0C\u9010\u6761\u6392\u67E5\uFF1B\u627E\u5230\u5E76\u8865\u6807 AIGC \u7D20\u6750\u540E\u6062\u590D\u6279\u91CF\u5220\u9664\uFF0C\u518D\u9047\u8B66\u544A\u624D\u91CD\u65B0\u6392\u67E5\u3002\u63D0\u793A\u4E0D\u660E\u786E\u6216\u5220\u9664\u7ED3\u679C\u672A\u786E\u8BA4\u65F6\u7ACB\u5373\u505C\u6B62\uFF0C\u4E0D\u91CD\u590D\u63D0\u4EA4\u3002</div><div class="row"><button class="btn" id="preview" ${state.busy?'disabled':''}>\u68C0\u67E5\u672B\u9875</button><button class="btn primary" id="start" ${state.busy?'disabled':''}>\u5F00\u59CB\u6E05\u7406</button><button class="btn stop" id="stop" ${state.busy?'':'disabled'}>\u505C\u6B62</button></div></div>

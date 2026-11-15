@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Live Speed Scheduler (Android)
 // @namespace    local.qianchuan.live-speed-scheduler
-// @version      1.2.8
+// @version      1.2.9
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js
 // @description  Android edition based on Windows v1.2.3: scheduled live tasks, automatic verification and local takeover.
@@ -849,27 +849,42 @@
     }
     return true;
   }
-  async function submitOnce() {
+  function firstSubmitKey(run) {
+    return planRunKey(run) + '-first-submit-' + run.day;
+  }
+  function hasSubmittedToday(run, previous) {
+    return GM_getValue(firstSubmitKey(run), false) || previous.some(item =>
+      item?.accountId === run.accountId && item.planId === run.planId && runDay(item) === run.day &&
+      (item.pending || item.confirmed?.length > 0));
+  }
+  async function submitOnce(directFirst = false) {
     const run = state.run;
     if (!run || run.status !== 'scheduled') throw new Error('\u8F6E\u6B21\u72B6\u6001\u4E0D\u5141\u8BB8\u63D0\u4EA4');
     if (localDay() !== run.day) { stopRun('\u5DF2\u8DE8\u5230\u65B0\u7684\u4E00\u5929', 'complete'); return; }
     assertIdentity();
-    phase('\u63D0\u4EA4\u524D\u53EA\u8BFB\u6838\u5BF9\u8BE5\u8BA1\u5212\u4ECA\u65E5\u9884\u7B97\uFF1B\u968F\u540E\u8FD4\u56DE\u8BA1\u5212\u5217\u8868\uFF0C\u4ECE\u201C\u4E00\u952E\u8C03\u901F +\u201D\u521B\u5EFA');
-    let scan = await scanToday();
-    while (scan.items.some(x => /\u8C03\u63A7\u4E2D/.test(x.state) &&
-      (run.confirmed || []).some(confirmed => confirmed.id === x.id))) {
-      if (Date.now() - run.nextAt > LATE_MS) {
-        throw new Error('\u4E0A\u4E00\u8F6E\u4EFB\u52A1\u5728\u9884\u5B9A\u65F6\u95F4\u540E 5 \u5206\u949F\u4ECD\u663E\u793A\u8C03\u63A7\u4E2D\uFF0C\u672A\u91CD\u590D\u63D0\u4EA4');
+    const firstKey = firstSubmitKey(run);
+    if (directFirst && !GM_getValue(firstKey, false)) {
+      if (run.budgetCents > run.capCents) throw new Error('\u9996\u8F6E\u9884\u7B97\u8D85\u8FC7\u8BE5\u8BA1\u5212\u5F53\u65E5\u4E0A\u9650');
+      phase('\u4ECA\u65E5\u9996\u6B21\u542F\u52A8\uFF0C\u76F4\u63A5\u521B\u5EFA\u9996\u8F6E\u4E00\u952E\u8C03\u901F');
+    } else {
+      directFirst = false;
+      phase('\u63D0\u4EA4\u524D\u53EA\u8BFB\u6838\u5BF9\u8BE5\u8BA1\u5212\u4ECA\u65E5\u9884\u7B97\uFF1B\u968F\u540E\u8FD4\u56DE\u8BA1\u5212\u5217\u8868\uFF0C\u4ECE\u201C\u4E00\u952E\u8C03\u901F +\u201D\u521B\u5EFA');
+      let scan = await scanToday();
+      while (scan.items.some(x => /\u8C03\u63A7\u4E2D/.test(x.state) &&
+        (run.confirmed || []).some(confirmed => confirmed.id === x.id))) {
+        if (Date.now() - run.nextAt > LATE_MS) {
+          throw new Error('\u4E0A\u4E00\u8F6E\u4EFB\u52A1\u5728\u9884\u5B9A\u65F6\u95F4\u540E 5 \u5206\u949F\u4ECD\u663E\u793A\u8C03\u63A7\u4E2D\uFF0C\u672A\u91CD\u590D\u63D0\u4EA4');
+        }
+        phase('\u4E0A\u4E00\u8F6E\u4EFB\u52A1\u4ECD\u663E\u793A\u8C03\u63A7\u4E2D\uFF0C10 \u79D2\u540E\u91CD\u65B0\u6838\u5BF9\uFF1B\u6B64\u65F6\u4E0D\u4F1A\u91CD\u590D\u63D0\u4EA4');
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        if (state.stopRequested) throw new Error('\u7528\u6237\u8BF7\u6C42\u505C\u6B62\uFF0C\u672A\u7EE7\u7EED\u63D0\u4EA4');
+        scan = await scanToday();
       }
-      phase('\u4E0A\u4E00\u8F6E\u4EFB\u52A1\u4ECD\u663E\u793A\u8C03\u63A7\u4E2D\uFF0C10 \u79D2\u540E\u91CD\u65B0\u6838\u5BF9\uFF1B\u6B64\u65F6\u4E0D\u4F1A\u91CD\u590D\u63D0\u4EA4');
-      await new Promise(resolve => setTimeout(resolve, 10000));
-      if (state.stopRequested) throw new Error('\u7528\u6237\u8BF7\u6C42\u505C\u6B62\uFF0C\u672A\u7EE7\u7EED\u63D0\u4EA4');
-      scan = await scanToday();
-    }
-    if (scheduleFromActiveTask(run, scan)) return;
-    if (scan.totalCents + run.budgetCents > run.capCents) {
-      stopRun('\u5F53\u524D\u8BA1\u5212\u4ECA\u65E5\u5DF2\u5B89\u6392 ' + yuan(scan.totalCents) + ' \u5143\uFF1B\u518D\u63D0\u4EA4 ' + yuan(run.budgetCents) + ' \u5143\u5C06\u8D85\u8FC7\u4E0A\u9650 ' + yuan(run.capCents) + ' \u5143', 'complete');
-      return;
+      if (scheduleFromActiveTask(run, scan)) return;
+      if (scan.totalCents + run.budgetCents > run.capCents) {
+        stopRun('\u5F53\u524D\u8BA1\u5212\u4ECA\u65E5\u5DF2\u5B89\u6392 ' + yuan(scan.totalCents) + ' \u5143\uFF1B\u518D\u63D0\u4EA4 ' + yuan(run.budgetCents) + ' \u5143\u5C06\u8D85\u8FC7\u4E0A\u9650 ' + yuan(run.capCents) + ' \u5143', 'complete');
+        return;
+      }
     }
     const name = taskName(run);
     const modal = await openCreateModal();
@@ -888,6 +903,11 @@
       }
       throw error;
     }
+    if (state.stopRequested || localDay() !== run.day) throw new Error('\u5DF2\u505C\u6B62\u6216\u8DE8\u65E5\uFF0C\u9996\u8F6E\u5C1A\u672A\u63D0\u4EA4');
+    assertLease();
+    if (directFirst && GM_getValue(firstKey, false)) throw new Error('\u672C\u8BA1\u5212\u4ECA\u65E5\u5DF2\u6709\u63D0\u4EA4\u8BB0\u5F55\uFF0C\u8BF7\u91CD\u65B0\u6838\u5BF9');
+    GM_setValue(firstKey, true);
+    if (directFirst) run.lastTodayCents = run.budgetCents;
     run.pending = { name, budgetCents: run.budgetCents, clickedAt: Date.now(), hiddenAtSubmit: document.hidden };
     run.status = 'submitting';
     saveRun();
@@ -933,7 +953,7 @@
     saveRun();
     log('\u7F51\u9875\u5237\u65B0\u5B8C\u6210\uFF1B\u5DF2\u91CD\u65B0\u786E\u8BA4\u9501\u5B9A\u8BA1\u5212\u548C\u4E00\u952E\u8C03\u901F\u521B\u5EFA\u5165\u53E3');
   }
-  async function cycle(first) {
+  async function cycle(first, directFirst = false) {
     if (state.busy) return;
     state.busy = true;
     state.stopRequested = false;
@@ -952,7 +972,7 @@
         if (run.refreshCompletedFor !== run.nextAt) await resumeAfterRefresh(run);
       }
       if (state.stopRequested) throw new Error('\u7528\u6237\u8BF7\u6C42\u505C\u6B62\uFF0C\u672A\u63D0\u4EA4\u4E0B\u4E00\u8F6E');
-      await submitOnce();
+      await submitOnce(directFirst);
     } catch (error) {
       const message = error && error.message || String(error);
       if (state.run) {
@@ -988,9 +1008,10 @@
       };
       state.run = run;
       saveRun();
-      log('\u624B\u52A8\u542F\u52A8\u6838\u5BF9\uFF1B\u5982\u6709\u8C03\u63A7\u4E2D\u4EFB\u52A1\u5148\u6309\u5176\u521B\u5EFA\u65F6\u95F4\u6062\u590D\u5B9A\u65F6\uFF0C\u5426\u5219\u521B\u5EFA\u9996\u8F6E\uFF1B\u540E\u7EED\u6BCF\u9694 ' +
-        run.intervalMinutes / 60 + ' \u5C0F\u65F6\u4EC5\u5728\u4ECA\u65E5\u81EA\u52A8\u7EED\u6295');
-      await cycle(true);
+      const previousOwnerRun = other?.owner ? GM_getValue('qc-live-speed-scheduler-run-v2-' + other.owner, null) : null;
+      const directFirst = !hasSubmittedToday(run, [saved, previousOwnerRun]);
+      log(directFirst ? '\u4ECA\u65E5\u9996\u6B21\u542F\u52A8\uFF0C\u6309\u8BBE\u5B9A\u91D1\u989D\u548C\u65F6\u957F\u521B\u5EFA\u9996\u8F6E' : '\u4ECA\u65E5\u5DF2\u6709\u672C\u52A9\u624B\u63D0\u4EA4\u8BB0\u5F55\uFF0C\u5148\u6838\u5BF9\u518D\u542F\u52A8');
+      await cycle(true, directFirst);
     } catch (error) { phase('\u542F\u52A8\u5931\u8D25\uFF1A' + error.message); }
   }
   function localTakeoverSource(lock, lease) {
@@ -1377,10 +1398,10 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
     const countdown = run && run.status === 'scheduled' ? durationText(run.nextAt - Date.now()) : '\u2014';
     const remainingCents = run ? Math.max(0, run.capCents - (run.lastTodayCents || 0)) : null;
     shadow.innerHTML = css + `<button id="launch" class="launcher" title="\u70B9\u51FB\u5C55\u5F00\uFF0C\u62D6\u52A8\u8C03\u6574\u4F4D\u7F6E" style="display:${state.open ? 'none' : 'block'};top:${esc(state.launcherTop)}%">\u8C03\u901F\u52A9\u624B</button>
-      <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>\u5343\u5DDD\u76F4\u64AD\u5B9A\u65F6\u8C03\u901F\u52A9\u624B</strong><small>v1.2.8 \u5B89\u5353\u7248 \u00B7 \u540E\u53F0\u5EF6\u8FDF\u81EA\u52A8\u6838\u5BF9 \u00B7 \u652F\u6301\u672C\u673A\u63A5\u7BA1 \u00B7 \u5F53\u524D\u76F4\u64AD\u8BA1\u5212 \u00B7 \u9ED8\u8BA4\u9759\u9ED8\u6700\u5C0F\u5316</small></div><button id="minimize" title="\u6700\u5C0F\u5316">\u2212</button></div><div class="body">
+      <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>\u5343\u5DDD\u76F4\u64AD\u5B9A\u65F6\u8C03\u901F\u52A9\u624B</strong><small>v1.2.9 \u5B89\u5353\u7248 \u00B7 \u540E\u53F0\u5EF6\u8FDF\u81EA\u52A8\u6838\u5BF9 \u00B7 \u652F\u6301\u672C\u673A\u63A5\u7BA1 \u00B7 \u5F53\u524D\u76F4\u64AD\u8BA1\u5212 \u00B7 \u9ED8\u8BA4\u9759\u9ED8\u6700\u5C0F\u5316</small></div><button id="minimize" title="\u6700\u5C0F\u5316">\u2212</button></div><div class="body">
       <div class="card"><div class="eyebrow">\u9501\u5B9A\u5F53\u524D\u76F4\u64AD\u8BA1\u5212</div><div class="title">${esc(lock?.planName || '\u5C1A\u672A\u9501\u5B9A')}</div><div class="muted">\u8D26\u6237 ${esc(lock?.accountId || '\u2014')} \u00B7 \u8BA1\u5212 ${esc(lock?.planId || '\u2014')}</div>${!urlContextSafeDetail() ? `<label class="field">\u5F53\u524D\u9875\u5728\u6295\u8BA1\u5212<select id="plan-choice" ${state.busy || active ? 'disabled' : ''}><option value="">\u8BF7\u9009\u62E9\u8BA1\u5212</option>${lockedOptions}</select></label>` : '<div class="hint">\u5F53\u524D\u4F4D\u4E8E\u76F4\u64AD\u8BA1\u5212\u8BE6\u60C5\u9875\uFF0C\u53EF\u76F4\u63A5\u9501\u5B9A\u8BE5\u8BA1\u5212\u3002</div>'}<div class="row"><button class="btn" id="lock" ${state.busy || active ? 'disabled' : ''}>\u9501\u5B9A\u5F53\u524D\u8BA1\u5212</button></div></div>
       <div class="card"><div class="eyebrow">\u4E00\u952E\u8C03\u901F\u53C2\u6570</div><div class="hint">\u8C03\u63A7\u5DE5\u5177\uFF1A\u4E00\u952E\u8C03\u901F \u00B7 \u8C03\u63A7\u65B9\u5F0F\uFF1A\u4E00\u952E\u8D77\u91CF \u00B7 \u8D77\u91CF\u63A2\u7D22\u76EE\u6807\uFF1A\u76F4\u64AD\u95F4\u8D2D\u4E70</div><div class="grid"><label class="field">\u5355\u6B21\u8C03\u63A7\u603B\u9884\u7B97\uFF08\u5143\uFF09<input id="budget" type="number" min="0.01" step="0.01" value="${esc(cfg.budget)}" ${state.busy || active ? 'disabled' : ''}></label><label class="field">\u8C03\u63A7\u65F6\u957F\uFF08\u5C0F\u65F6\uFF09<input id="hours" type="number" min="0.5" max="24" step="0.5" value="${esc(cfg.hours)}" ${state.busy || active ? 'disabled' : ''}></label><label class="field">\u7EED\u6295\u95F4\u9694\uFF08\u5C0F\u65F6\uFF09<input id="interval" type="number" min="0.5" max="24" step="0.5" value="${esc(cfg.intervalHours)}" ${state.busy || active ? 'disabled' : ''}></label><label class="field">\u8BE5\u8BA1\u5212\u5F53\u65E5\u4E0A\u9650\uFF08\u5143\uFF09<input id="cap" type="number" min="0.01" step="0.01" value="${esc(cfg.dailyCap)}" ${state.busy || active ? 'disabled' : ''}></label></div><div class="hint">\u4E0A\u9650\u8BA1\u5165\u5F53\u524D\u8BA1\u5212\u4ECA\u5929\u8C03\u63A7\u5217\u8868\u4E2D\u7684\u5168\u90E8\u4E00\u952E\u8C03\u901F\u4EFB\u52A1\uFF0C\u5305\u62EC\u4EBA\u5DE5\u521B\u5EFA\u7684\u4EFB\u52A1\u3002\u4E0B\u4E00\u6B21\u63D0\u4EA4\u4F1A\u8D85\u51FA\u4E0A\u9650\u65F6\u7ED3\u675F\u672C\u8F6E\u3002</div></div>
-      <div class="card"><div class="eyebrow">\u6267\u884C</div><div class="hint warn">\u6BCF\u4E2A\u76F4\u64AD\u8BA1\u5212\u8BF7\u4FDD\u6301\u5728\u5404\u81EA\u7684\u5343\u5DDD\u6807\u7B7E\u9875\uFF1B\u4E0D\u540C\u6807\u7B7E\u9875\u53EF\u5404\u81EA\u5B9A\u65F6\uFF0C\u540C\u4E00\u8BA1\u5212\u4E0D\u80FD\u91CD\u590D\u542F\u52A8\u3002\u542F\u52A8\u65F6\u5148\u5C06\u4EFB\u52A1\u65E5\u671F\u7B5B\u9009\u4E3A\u4ECA\u5929\u5E76\u6838\u5BF9\u9884\u7B97\uFF1A\u82E5\u5DF2\u6709\u8C03\u63A7\u4E2D\u4EFB\u52A1\uFF0C\u5219\u6309\u6700\u8FD1\u4EFB\u52A1\u7684\u521B\u5EFA\u65F6\u95F4\u5F00\u59CB\u5012\u8BA1\u65F6\uFF0C\u4E0D\u91CD\u590D\u63D0\u4EA4\uFF1B\u82E5\u4ECA\u5929\u6CA1\u6709\u4EFB\u52A1\uFF0C\u5219\u8FD4\u56DE\u8BA1\u5212\u5217\u8868\u521B\u5EFA\u9996\u8F6E\u3002\u4E0B\u4E00\u8F6E\u5230\u70B9\u540E\u5148\u56DE\u5230\u8BA1\u5212\u5217\u8868\u5E76\u5237\u65B0\uFF0C\u518D\u4ECE\u8BE5\u8BA1\u5212\u201C\u4E00\u952E\u8C03\u901F\u201D\u65C1\u7684\u201C+\u201D\u521B\u5EFA\u3002\u63D0\u4EA4\u540E\u5EF6\u957F\u89C2\u5BDF\u5F39\u7A97\u5E76\u81EA\u52A8\u591A\u6B21\u6838\u5BF9\u201C\u8C03\u63A7\u201D\u4EFB\u52A1\uFF1B\u786E\u8BA4\u6210\u529F\u540E\u6062\u590D\u5012\u8BA1\u65F6\uFF0C\u59CB\u7EC8\u4E0D\u81EA\u52A8\u91CD\u63D0\u3002\u4EC5\u5F53\u5929\u7EED\u6295\uFF0C\u9519\u8FC7\u9884\u5B9A\u65F6\u95F4\u8D85\u8FC7 5 \u5206\u949F\u4E0D\u8865\u6295\u3002</div><div class="row"><button class="btn primary" id="start" ${state.busy || active ? 'disabled' : ''}>\u6838\u5BF9\u4ECA\u65E5\u4EFB\u52A1\u5E76\u542F\u52A8</button><button class="btn stop" id="stop" ${run && (['scheduled', 'submitting'].includes(run.status) || (state.busy && run.takeoverCheckPending)) ? '' : 'disabled'}>\u505C\u6B62</button></div><div class="row"><button class="btn" id="takeover" ${state.busy || state.reloading || !state.lock ? 'disabled' : ''}>\u672C\u673A\u63A5\u7BA1\u5E76\u6838\u5BF9\u4ECA\u65E5\u4EFB\u52A1</button></div><div class="hint">\u4EC5\u63A5\u7BA1\u672C\u6D4F\u89C8\u5668\u5F53\u524D\u8BA1\u5212\u7684\u65E7\u8BB0\u5F55\uFF0C\u4E0D\u4F1A\u901A\u77E5\u5176\u4ED6\u7535\u8111\u3002\u5DF2\u6709\u4EFB\u52A1\u6309\u6700\u8FD1\u521B\u5EFA\u65F6\u95F4\u6062\u590D\u5012\u8BA1\u65F6\uFF1B\u5F85\u786E\u8BA4\u63D0\u4EA4\u672A\u6838\u6E05\u65F6\u4E0D\u8865\u6295\u3002</div>${run && run.status === 'needs_review' && !run.takeoverCheckPending ? '<div class="row"><button class="btn" id="reconcile">\u6838\u5BF9\u5DF2\u63D0\u4EA4\u4EFB\u52A1\u5E76\u6062\u590D\u5B9A\u65F6\uFF08\u4E0D\u91CD\u63D0\uFF09</button></div>' : ''}</div>
+      <div class="card"><div class="eyebrow">\u6267\u884C</div><div class="hint warn">\u6BCF\u5929\u9996\u6B21\u542F\u52A8\u76F4\u63A5\u6309\u8BBE\u5B9A\u9884\u7B97\u548C\u65F6\u957F\u521B\u5EFA\uFF0C\u9996\u8F6E\u8BA1\u5165\u5F53\u65E5\u4E0A\u9650\u3002\u63D0\u4EA4\u540E\u6838\u5BF9\u65B0\u4EFB\u52A1\u548C\u4ECA\u65E5\u9884\u7B97\uFF0C\u518D\u6309\u8BBE\u5B9A\u95F4\u9694\u7EED\u6295\u3002\u5F53\u5929\u518D\u6B21\u542F\u52A8\u65F6\u5148\u6838\u5BF9\u4EFB\u52A1\u3002</div><div class="row"><button class="btn primary" id="start" ${state.busy || active ? 'disabled' : ''}>\u542F\u52A8\u5B9A\u65F6\u8C03\u901F</button><button class="btn stop" id="stop" ${run && (['scheduled', 'submitting'].includes(run.status) || (state.busy && run.takeoverCheckPending)) ? '' : 'disabled'}>\u505C\u6B62</button></div><div class="row"><button class="btn" id="takeover" ${state.busy || state.reloading || !state.lock ? 'disabled' : ''}>\u672C\u673A\u63A5\u7BA1\u5E76\u6838\u5BF9\u4ECA\u65E5\u4EFB\u52A1</button></div><div class="hint">\u4EC5\u63A5\u7BA1\u672C\u6D4F\u89C8\u5668\u5F53\u524D\u8BA1\u5212\u7684\u65E7\u8BB0\u5F55\uFF0C\u4E0D\u4F1A\u901A\u77E5\u5176\u4ED6\u7535\u8111\u3002\u5DF2\u6709\u4EFB\u52A1\u6309\u6700\u8FD1\u521B\u5EFA\u65F6\u95F4\u6062\u590D\u5012\u8BA1\u65F6\uFF1B\u5F85\u786E\u8BA4\u63D0\u4EA4\u672A\u6838\u6E05\u65F6\u4E0D\u8865\u6295\u3002</div>${run && run.status === 'needs_review' && !run.takeoverCheckPending ? '<div class="row"><button class="btn" id="reconcile">\u6838\u5BF9\u5DF2\u63D0\u4EA4\u4EFB\u52A1\u5E76\u6062\u590D\u5B9A\u65F6\uFF08\u4E0D\u91CD\u63D0\uFF09</button></div>' : ''}</div>
       <div class="card"><div class="eyebrow">\u6267\u884C\u72B6\u6001</div><div class="status">${esc(state.phase)}</div><div class="metrics"><div class="metric"><span>\u8DDD\u79BB\u4E0B\u4E00\u8F6E</span><strong id="countdown" class="accent">${esc(countdown)}</strong></div><div class="metric"><span>\u5355\u6B21\u8C03\u63A7\u9884\u7B97</span><strong>${run ? yuan(run.budgetCents) + ' \u5143' : cfg.budget ? esc(cfg.budget) + ' \u5143' : '\u2014'}</strong></div><div class="metric"><span>\u8C03\u63A7\u65F6\u957F</span><strong>${run ? run.hours + ' \u5C0F\u65F6' : cfg.hours ? esc(cfg.hours) + ' \u5C0F\u65F6' : '\u2014'}</strong></div><div class="metric"><span>\u4ECA\u65E5\u5269\u4F59\u989D\u5EA6</span><strong>${remainingCents === null ? '\u2014' : yuan(remainingCents) + ' \u5143'}</strong></div></div><div class="hint">${run ? '\u72B6\u6001\uFF1A' + esc(run.status) + ' \u00B7 \u672C\u8F6E\u786E\u8BA4 ' + (run.confirmed || []).length + ' \u6B21 \u00B7 \u4ECA\u65E5\u5DF2\u5B89\u6392 ' + yuan(run.lastTodayCents || 0) + ' \u5143' : '\u5C1A\u672A\u542F\u52A8'}<br>\u4E0B\u4E00\u8F6E\u9884\u8BA1\uFF1A${esc(next)}${run?.lastScanAt ? ' \u00B7 \u9884\u7B97\u6838\u5BF9\u4E8E ' + esc(timeText(run.lastScanAt)) : ''}</div></div>
       <div class="card"><div class="eyebrow">\u6267\u884C\u8BB0\u5F55</div><div class="log">${esc((run?.logs || state.logs).slice(-35).join('\n') || '\u5C1A\u65E0\u8BB0\u5F55')}</div></div><div class="card"><div class="eyebrow">\u7ED3\u679C\u62A5\u544A</div><div class="report">${esc(state.report || '\u6267\u884C\u540E\u751F\u6210\u62A5\u544A')}</div><div class="row"><button class="btn" id="copy">\u590D\u5236\u62A5\u544A</button></div></div></div></div>`;
         launcherPlacement.bind(shadow.getElementById('launch'), () => { state.open = true; render(); });

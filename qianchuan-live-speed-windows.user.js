@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         千川直播定时一键调速助手
 // @namespace    local.qianchuan.live-speed-scheduler
-// @version      1.2.5
+// @version      1.2.6
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js
 // @description  当前直播计划定时调速；提交后容忍后台页面延迟，自动多次核对已建任务，禁止重复提交
@@ -810,27 +810,42 @@
     }
     return true;
   }
-  async function submitOnce() {
+  function firstSubmitKey(run) {
+    return planRunKey(run) + '-first-submit-' + run.day;
+  }
+  function hasSubmittedToday(run, previous) {
+    return GM_getValue(firstSubmitKey(run), false) || previous.some(item =>
+      item?.accountId === run.accountId && item.planId === run.planId && runDay(item) === run.day &&
+      (item.pending || item.confirmed?.length > 0));
+  }
+  async function submitOnce(directFirst = false) {
     const run = state.run;
     if (!run || run.status !== 'scheduled') throw new Error('轮次状态不允许提交');
     if (localDay() !== run.day) { stopRun('已跨到新的一天', 'complete'); return; }
     assertIdentity();
-    phase('提交前只读核对该计划今日预算；随后返回计划列表，从“一键调速 +”创建');
-    let scan = await scanToday();
-    while (scan.items.some(x => /调控中/.test(x.state) &&
-      (run.confirmed || []).some(confirmed => confirmed.id === x.id))) {
-      if (Date.now() - run.nextAt > LATE_MS) {
-        throw new Error('上一轮任务在预定时间后 5 分钟仍显示调控中，未重复提交');
+    const firstKey = firstSubmitKey(run);
+    if (directFirst && !GM_getValue(firstKey, false)) {
+      if (run.budgetCents > run.capCents) throw new Error('首轮预算超过该计划当日上限');
+      phase('今日首次启动，直接创建首轮一键调速');
+    } else {
+      directFirst = false;
+      phase('提交前只读核对该计划今日预算；随后返回计划列表，从“一键调速 +”创建');
+      let scan = await scanToday();
+      while (scan.items.some(x => /调控中/.test(x.state) &&
+        (run.confirmed || []).some(confirmed => confirmed.id === x.id))) {
+        if (Date.now() - run.nextAt > LATE_MS) {
+          throw new Error('上一轮任务在预定时间后 5 分钟仍显示调控中，未重复提交');
+        }
+        phase('上一轮任务仍显示调控中，10 秒后重新核对；此时不会重复提交');
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        if (state.stopRequested) throw new Error('用户请求停止，未继续提交');
+        scan = await scanToday();
       }
-      phase('上一轮任务仍显示调控中，10 秒后重新核对；此时不会重复提交');
-      await new Promise(resolve => setTimeout(resolve, 10000));
-      if (state.stopRequested) throw new Error('用户请求停止，未继续提交');
-      scan = await scanToday();
-    }
-    if (scheduleFromActiveTask(run, scan)) return;
-    if (scan.totalCents + run.budgetCents > run.capCents) {
-      stopRun('当前计划今日已安排 ' + yuan(scan.totalCents) + ' 元；再提交 ' + yuan(run.budgetCents) + ' 元将超过上限 ' + yuan(run.capCents) + ' 元', 'complete');
-      return;
+      if (scheduleFromActiveTask(run, scan)) return;
+      if (scan.totalCents + run.budgetCents > run.capCents) {
+        stopRun('当前计划今日已安排 ' + yuan(scan.totalCents) + ' 元；再提交 ' + yuan(run.budgetCents) + ' 元将超过上限 ' + yuan(run.capCents) + ' 元', 'complete');
+        return;
+      }
     }
     const name = taskName(run);
     const modal = await openCreateModal();
@@ -849,6 +864,11 @@
       }
       throw error;
     }
+    if (state.stopRequested || localDay() !== run.day) throw new Error('已停止或跨日，首轮尚未提交');
+    assertLease();
+    if (directFirst && GM_getValue(firstKey, false)) throw new Error('本计划今日已有提交记录，请重新核对');
+    GM_setValue(firstKey, true);
+    if (directFirst) run.lastTodayCents = run.budgetCents;
     run.pending = { name, budgetCents: run.budgetCents, clickedAt: Date.now(), hiddenAtSubmit: document.hidden };
     run.status = 'submitting';
     saveRun();
@@ -894,7 +914,7 @@
     saveRun();
     log('网页刷新完成；已重新确认锁定计划和一键调速创建入口');
   }
-  async function cycle(first) {
+  async function cycle(first, directFirst = false) {
     if (state.busy) return;
     state.busy = true;
     state.stopRequested = false;
@@ -913,7 +933,7 @@
         if (run.refreshCompletedFor !== run.nextAt) await resumeAfterRefresh(run);
       }
       if (state.stopRequested) throw new Error('用户请求停止，未提交下一轮');
-      await submitOnce();
+      await submitOnce(directFirst);
     } catch (error) {
       const message = error && error.message || String(error);
       if (state.run) {
@@ -949,9 +969,10 @@
       };
       state.run = run;
       saveRun();
-      log('手动启动核对；如有调控中任务先按其创建时间恢复定时，否则创建首轮；后续每隔 ' +
-        run.intervalMinutes / 60 + ' 小时仅在今日自动续投');
-      await cycle(true);
+      const previousOwnerRun = other?.owner ? GM_getValue('qc-live-speed-scheduler-run-v2-' + other.owner, null) : null;
+      const directFirst = !hasSubmittedToday(run, [saved, previousOwnerRun]);
+      log(directFirst ? '今日首次启动，按设定金额和时长创建首轮' : '今日已有本助手提交记录，先核对再启动');
+      await cycle(true, directFirst);
     } catch (error) { phase('启动失败：' + error.message); }
   }
   function localTakeoverSource(lock, lease) {
@@ -1185,10 +1206,10 @@
     const countdown = run && run.status === 'scheduled' ? durationText(run.nextAt - Date.now()) : '—';
     const remainingCents = run ? Math.max(0, run.capCents - (run.lastTodayCents || 0)) : null;
     shadow.innerHTML = css + `<button id="launch" class="launcher" title="点击展开，拖动调整位置" style="display:${state.open ? 'none' : 'block'};top:${esc(state.launcherTop)}%">调速助手</button>
-      <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>千川直播定时调速助手</strong><small>v1.2.3 · 后台延迟自动核对 · 支持本机接管 · 当前直播计划 · 默认静默最小化</small></div><button id="minimize" title="最小化">−</button></div><div class="body">
+      <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>千川直播定时调速助手</strong><small>v1.2.6 · 后台延迟自动核对 · 支持本机接管 · 当前直播计划 · 默认静默最小化</small></div><button id="minimize" title="最小化">−</button></div><div class="body">
       <div class="card"><div class="eyebrow">锁定当前直播计划</div><div class="title">${esc(lock?.planName || '尚未锁定')}</div><div class="muted">账户 ${esc(lock?.accountId || '—')} · 计划 ${esc(lock?.planId || '—')}</div>${!urlContextSafeDetail() ? `<label class="field">当前页在投计划<select id="plan-choice" ${state.busy || active ? 'disabled' : ''}><option value="">请选择计划</option>${lockedOptions}</select></label>` : '<div class="hint">当前位于直播计划详情页，可直接锁定该计划。</div>'}<div class="row"><button class="btn" id="lock" ${state.busy || active ? 'disabled' : ''}>锁定当前计划</button></div></div>
       <div class="card"><div class="eyebrow">一键调速参数</div><div class="hint">调控工具：一键调速 · 调控方式：一键起量 · 起量探索目标：直播间购买</div><div class="grid"><label class="field">单次调控总预算（元）<input id="budget" type="number" min="0.01" step="0.01" value="${esc(cfg.budget)}" ${state.busy || active ? 'disabled' : ''}></label><label class="field">调控时长（小时）<input id="hours" type="number" min="0.5" max="24" step="0.5" value="${esc(cfg.hours)}" ${state.busy || active ? 'disabled' : ''}></label><label class="field">续投间隔（小时）<input id="interval" type="number" min="0.5" max="24" step="0.5" value="${esc(cfg.intervalHours)}" ${state.busy || active ? 'disabled' : ''}></label><label class="field">该计划当日上限（元）<input id="cap" type="number" min="0.01" step="0.01" value="${esc(cfg.dailyCap)}" ${state.busy || active ? 'disabled' : ''}></label></div><div class="hint">上限计入当前计划今天调控列表中的全部一键调速任务，包括人工创建的任务。下一次提交会超出上限时结束本轮。</div></div>
-      <div class="card"><div class="eyebrow">执行</div><div class="hint warn">每个直播计划请保持在各自的千川标签页；不同标签页可各自定时，同一计划不能重复启动。启动时先将任务日期筛选为今天并核对预算：若已有调控中任务，则按最近任务的创建时间开始倒计时，不重复提交；若今天没有任务，则返回计划列表创建首轮。下一轮到点后先回到计划列表并刷新，再从该计划“一键调速”旁的“+”创建。提交后延长观察弹窗并自动多次核对“调控”任务；确认成功后恢复倒计时，始终不自动重提。仅当天续投，错过预定时间超过 5 分钟不补投。</div><div class="row"><button class="btn primary" id="start" ${state.busy || active ? 'disabled' : ''}>核对今日任务并启动</button><button class="btn stop" id="stop" ${run && (['scheduled', 'submitting'].includes(run.status) || (state.busy && run.takeoverCheckPending)) ? '' : 'disabled'}>停止</button></div><div class="row"><button class="btn" id="takeover" ${state.busy || state.reloading || !state.lock ? 'disabled' : ''}>本机接管并核对今日任务</button></div><div class="hint">仅接管本浏览器当前计划的旧记录，不会通知其他电脑。已有任务按最近创建时间恢复倒计时；待确认提交未核清时不补投。</div>${run && run.status === 'needs_review' && !run.takeoverCheckPending ? '<div class="row"><button class="btn" id="reconcile">核对已提交任务并恢复定时（不重提）</button></div>' : ''}</div>
+      <div class="card"><div class="eyebrow">执行</div><div class="hint warn">每天首次启动直接按设定预算和时长创建，首轮计入当日上限。提交后核对新任务和今日预算，再按设定间隔续投。当天再次启动时先核对任务。</div><div class="row"><button class="btn primary" id="start" ${state.busy || active ? 'disabled' : ''}>启动定时调速</button><button class="btn stop" id="stop" ${run && (['scheduled', 'submitting'].includes(run.status) || (state.busy && run.takeoverCheckPending)) ? '' : 'disabled'}>停止</button></div><div class="row"><button class="btn" id="takeover" ${state.busy || state.reloading || !state.lock ? 'disabled' : ''}>本机接管并核对今日任务</button></div><div class="hint">仅接管本浏览器当前计划的旧记录，不会通知其他电脑。已有任务按最近创建时间恢复倒计时；待确认提交未核清时不补投。</div>${run && run.status === 'needs_review' && !run.takeoverCheckPending ? '<div class="row"><button class="btn" id="reconcile">核对已提交任务并恢复定时（不重提）</button></div>' : ''}</div>
       <div class="card"><div class="eyebrow">执行状态</div><div class="status">${esc(state.phase)}</div><div class="metrics"><div class="metric"><span>距离下一轮</span><strong id="countdown" class="accent">${esc(countdown)}</strong></div><div class="metric"><span>单次调控预算</span><strong>${run ? yuan(run.budgetCents) + ' 元' : cfg.budget ? esc(cfg.budget) + ' 元' : '—'}</strong></div><div class="metric"><span>调控时长</span><strong>${run ? run.hours + ' 小时' : cfg.hours ? esc(cfg.hours) + ' 小时' : '—'}</strong></div><div class="metric"><span>今日剩余额度</span><strong>${remainingCents === null ? '—' : yuan(remainingCents) + ' 元'}</strong></div></div><div class="hint">${run ? '状态：' + esc(run.status) + ' · 本轮确认 ' + (run.confirmed || []).length + ' 次 · 今日已安排 ' + yuan(run.lastTodayCents || 0) + ' 元' : '尚未启动'}<br>下一轮预计：${esc(next)}${run?.lastScanAt ? ' · 预算核对于 ' + esc(timeText(run.lastScanAt)) : ''}</div></div>
       <div class="card"><div class="eyebrow">执行记录</div><div class="log">${esc((run?.logs || state.logs).slice(-35).join('\n') || '尚无记录')}</div></div><div class="card"><div class="eyebrow">结果报告</div><div class="report">${esc(state.report || '执行后生成报告')}</div><div class="row"><button class="btn" id="copy">复制报告</button></div></div></div></div>`;
     const launcher = shadow.getElementById('launch');

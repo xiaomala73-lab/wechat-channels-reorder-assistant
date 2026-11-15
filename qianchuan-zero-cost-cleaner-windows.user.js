@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巨量千川零消耗素材清理助手
 // @namespace    local.qianchuan.empty-cost-cleaner
-// @version      1.1.6
+// @version      1.1.7
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-windows.user.js
 // @description  自选投放视频清理；末页保留一条；AIGC警告临时逐条排查，补标成功立即恢复批量删除
@@ -303,6 +303,16 @@
     await stable();
     log('已直接跳到综合成本降序末页：第 ' + pageInfo().page + '/' + pageInfo().pages + ' 页');
   }
+  async function restoreScanPage(page) {
+    const info = pageInfo();
+    const target = Math.min(page, info.pages);
+    if (info.page === target) return;
+    const direction = info.page < target ? 'next' : 'prev';
+    for (let remaining = Math.abs(target - info.page); remaining > 0; remaining--) {
+      if (!(await move(direction))) throw new Error('无法返回排查页 ' + target);
+    }
+    if (pageInfo().page !== target) throw new Error('排查页码发生变化，预期第 ' + target + ' 页');
+  }
   function selectedRows() { return rows().filter(r => r.checkbox.checked); }
   function toolbarSelectedCount() {
     const matches = Array.from(context().drawer.innerText.matchAll(/已选\s*(\d+)\s*个\s*视频/g));
@@ -494,13 +504,9 @@
       log('目标 ID ' + ids.join(', ') + ' 删除结果尚未刷新；只翻页重读一次，不重复删除');
       if (selectedRows().length) await clearSelection();
       const info = pageInfo();
-      if (info.page > 1) {
-        await move('prev');
-        await lastPage();
-      } else if (info.pages > 1) {
-        await move('next');
-        await move('prev');
-      }
+      if (info.page > 1) await move('prev');
+      else if (info.pages > 1) await move('next');
+      await restoreScanPage(info.page);
       evidence = await deletionEvidence(ids, oldTotal, 6000);
     }
     if (!evidence.confirmed) {
@@ -537,7 +543,7 @@
     if (selectedRows().length) await clearSelection();
   }
   async function processOne(id) {
-    // 每轮只处理一条。千川删除后会重排列表，下一条必须从刷新后的末页重新核对。
+    // 每轮只处理一条。删除后重新读取排查页，按素材 ID 核对下一条。
     if (!id || selectedRows().length) throw new Error('逐条删除前选择状态不正确');
     const row = rows().find(r => r.id === id);
     if (!row || !eligible(row)) throw new Error('待处理素材条件已改变');
@@ -647,16 +653,15 @@
         report('演练检查当前末页，未删除');
         return;
       }
-      let visits = 0, scanned = 0, reason = '', returnToLast = false;
+      let visits = 0, scanned = 0, reason = '', resumePage = null;
       const singleFallbackIds = new Set();
       while (state.deleted.length < cfg.quota) {
         assertRun();
         if (++visits > 1000) throw new Error('扫描超过1000轮，已停止以避免循环');
         await stable();
-        if (returnToLast) {
-          await lastPage();
-          returnToLast = false;
-        }
+        if (resumePage === 'last') await lastPage();
+        else if (resumePage !== null) await restoreScanPage(resumePage);
+        resumePage = null;
         const info = pageInfo(), current = rows();
         protectFinalPageTail(info, current);
         scanned++;
@@ -671,13 +676,13 @@
               singleFallbackIds.clear();
               log('已找到并补标 AIGC 跑量素材；结束逐条排查，下一轮重新读取合格素材并恢复批量删除');
             }
-            if (result === 'deleted') returnToLast = true;
+            if (result === 'deleted') resumePage = info.page;
           } else {
             const ids = candidates.map(r => r.id);
             log('第 ' + info.page + '/' + info.pages + ' 页拟批量删除 ' + ids.length + ' 条；逐条核对 ID、日期、成本和标签');
             const result = await processBatch(ids);
             if (result === 'aigc') ids.forEach(id => singleFallbackIds.add(id));
-            else returnToLast = true;
+            else resumePage = 'last';
           }
           continue;
         }
@@ -733,7 +738,7 @@
     const planLabel = live ? '直播在投计划' : '商品在投计划';
     const sourceLabel = live ? '视频类型为自选投放视频' : '素材类型为自选投放素材';
     shadow.innerHTML = css + `<button class="launcher" id="launch" title="点击展开，拖动调整位置" aria-label="展开千川零消耗素材清理助手" style="display:${state.panelOpen?'none':'block'};top:${escapeHTML(state.launcherTop)}%">清理助手</button>
-      <div class="panel" style="display:${state.panelOpen?'flex':'none'}"><div class="head"><div><strong>千川零消耗素材清理助手</strong><small>v1.1.6 · ${planLabel} · 自选投放视频</small></div><button id="close" title="最小化" aria-label="最小化助手">−</button></div><div class="body">
+      <div class="panel" style="display:${state.panelOpen?'flex':'none'}"><div class="head"><div><strong>千川零消耗素材清理助手</strong><small>v1.1.7 · ${planLabel} · 自选投放视频</small></div><button id="close" title="最小化" aria-label="最小化助手">−</button></div><div class="body">
       <div class="card"><div class="eyebrow">锁定账户 / 当前计划</div><div class="title">${lock?escapeHTML(lock.accountName):'尚未锁定'}</div><div class="muted">${lock?escapeHTML(lock.accountId):''}</div><div class="title" style="margin-top:6px">${lock?escapeHTML(lock.planName):'请先打开素材页'}</div><div class="muted">${lock?escapeHTML(lock.planId):''}</div><div class="row"><button class="btn" id="lock" ${state.busy?'disabled':''}>锁定当前计划</button></div></div>
       <div class="card"><div class="eyebrow">筛选条件</div><div class="grid"><label class="field">创建日期严格早于<input id="cutoff" type="date" value="${escapeHTML(cfg.cutoff)}" ${state.busy?'disabled':''}></label><label class="field">最多删除条数<input id="quota" type="number" min="1" max="${MAX_QUOTA}" step="1" value="${escapeHTML(cfg.quota)}" ${state.busy?'disabled':''}></label></div><div class="hint">${live?'直播素材→视频页筛选“视频类型：自选投放视频”':'商品素材页筛选“素材类型：自选投放”'}，20 条/页；按<strong>综合成本(元)降序</strong>从末页往前检查。仅删成本为空（-、--、暂无数据或空白）、日期早于截止日、且无 AIGC跑量 标签的素材。</div></div>
       <div class="card"><div class="eyebrow">执行</div><div class="hint warn">先演练查看末页候选。末页全部合格时保留最后一条，避免删除后空页；其余合格素材优先整批处理。出现 AIGC 警告则取消本批，逐条排查；找到并补标 AIGC 素材后恢复批量删除，再遇警告才重新排查。提示不明确或删除结果未确认时立即停止，不重复提交。</div><div class="row"><button class="btn" id="preview" ${state.busy?'disabled':''}>检查末页</button><button class="btn primary" id="start" ${state.busy?'disabled':''}>开始清理</button><button class="btn stop" id="stop" ${state.busy?'':'disabled'}>停止</button></div></div>

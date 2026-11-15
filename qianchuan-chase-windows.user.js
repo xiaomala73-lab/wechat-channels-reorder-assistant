@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巨量千川素材追投助手（安全锁定版）
 // @namespace    local.qianchuan.chase
-// @version      0.4.36
+// @version      0.4.37
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js
 // @description  商品日期追投可设最终尾组最低数量；直播日期允许未审核素材；整组复核补选；提交失败限重试一次
@@ -51,7 +51,6 @@
       startDate: '',
       endDate: '',
       dashPolicy: 'pause',
-      dryRun: true,
       skipControlling: true,
       bid: 10.5,
       liveGoal: '直播间成交',
@@ -67,7 +66,6 @@
     logs: [],
     report: '',
     currentRun: null,
-    previewSelection: null,
     batch: null,
     batchRunActive: false,
     refreshing: false,
@@ -331,7 +329,6 @@
       state.config.planId = current.planId;
       state.config.planName = current.planName;
       if (changed) {
-        state.previewSelection = null;
         state.config.mode = 'roi';
         state.config.budget = 100;
         state.config.hours = 24;
@@ -350,7 +347,6 @@
         state.config.liveGender = '不限';
         state.config.tailMin = 5;
       }
-      state.config.dryRun = true;
       state.currentRun = null;
       state.report = '';
       state.phase = '已锁定当前' + (current.planKind === 'live' ? '直播' : '商品自选') + '计划；可主动再次创建追投任务';
@@ -924,124 +920,6 @@
         return !current || !current.check.checked;
       })) throw new Error('整组素材勾选状态与目标 ID 不一致');
     }
-  }
-
-  async function clearPreviewSelection() {
-    var current = context('creative');
-    var drawer = current.drawer;
-    var saved = state.previewSelection;
-    var count = selectedCount(drawer);
-    if (!saved) {
-      if (count !== 0) throw new Error('页面存在非本次演练的遗留勾选，请先手动取消');
-      return;
-    }
-    if (saved.accountId !== current.accountId || saved.planId !== current.planId) {
-      throw new Error('演练后账户或计划已变化，无法安全清除勾选');
-    }
-    if (count === 0) {
-      state.previewSelection = null;
-      return;
-    }
-    if (pageNumber(drawer) !== saved.page || count !== saved.ids.length) {
-      throw new Error('演练勾选的页码或数量已变化，请手动核对并取消勾选');
-    }
-    var table = materialTable(drawer);
-    var rows = Array.from(table.body.querySelectorAll('tbody tr')).filter(visible).map(function (tr) {
-      var cells = Array.from(tr.querySelectorAll(':scope > td'));
-      var match = (exactText(cells[1]).match(/素材ID[：:]\s*(\d+)/g) || []);
-      var id = match.length ? (match[match.length - 1].match(/\d+/) || [])[0] : '';
-      var check = cells[0] && cells[0].querySelector('input[type="checkbox"]');
-      if (!id || !check) throw new Error('无法核对演练勾选的素材行');
-      return { id: id, check: check };
-    });
-    var checked = rows.filter(function (item) { return item.check.checked; });
-    if (!sameIds(checked.map(function (item) { return item.id; }), saved.ids)) {
-      throw new Error('当前勾选素材与演练记录不一致，请手动核对并取消勾选');
-    }
-    if (checked.length === rows.length) {
-      var headerCheck = unique(table.head.querySelectorAll('input[type="checkbox"]'), '素材表头全选');
-      if (!headerCheck.checked) throw new Error('表头全选状态不一致，未清除演练勾选');
-      await safeClick(headerCheck, '取消演练表头全选');
-    } else {
-      for (var i = 0; i < checked.length; i++) {
-        await clickMaterialCheckbox(checked[i].id, false, checked.length - i);
-      }
-    }
-    await waitFor(function () {
-      return selectedCount(context('creative').drawer) === 0;
-    }, '演练勾选全部清除');
-    state.previewSelection = null;
-    addLog('已核对并清除上一轮演练的' + saved.ids.length + '条勾选');
-  }
-
-  async function previewCurrentPage(retries) {
-    var cfg = state.config;
-    var bundle = cfg.planKind === 'live' ? await waitForLiveStatusPage() : await waitForProductRowsReady();
-    if (selectedCount(bundle.drawer) !== 0) throw new Error('当前页存在遗留勾选，演练未继续');
-    var size = cfg.mode === 'roi' ? cfg.roiGroupSize : cfg.dateGroupSize;
-    var chosen = [];
-    var detail = '';
-    if (cfg.mode === 'date') {
-      var dateRows = bundle.rows.filter(function (item) {
-        return item.date >= cfg.startDate && item.date <= cfg.endDate && eligibleForChase(item);
-      });
-      chosen = dateRows.slice(0, size);
-      if (chosen.length < size && chosen.length < cfg.tailMin) {
-        detail = '本页仅有' + chosen.length + '条区间内素材，不足一组且低于尾组' + cfg.tailMin + '条下限；未勾选';
-        chosen = [];
-      }
-    } else if (cfg.roiStrategy === 'strict') {
-      for (var i = 0; i < bundle.rows.length && chosen.length < size; i++) {
-        if (!eligibleForChase(bundle.rows[i])) continue;
-        if (bundle.rows[i].roi === null || bundle.rows[i].roi < cfg.roiThreshold) break;
-        chosen.push(bundle.rows[i]);
-      }
-    } else {
-      var selectableRows = bundle.rows.filter(eligibleForChase);
-      var hasBelow = selectableRows.some(function (item) {
-        return item.roi !== null && item.roi < cfg.roiThreshold;
-      });
-      var hasDash = selectableRows.some(function (item) { return item.roi === null; });
-      if (hasDash && !hasBelow && cfg.dashPolicy === 'pause') {
-        detail = '本页 ROI 出现“—”，按当前策略暂停；未勾选';
-      } else {
-        chosen = selectableRows.slice(0, size);
-      }
-    }
-    if (cfg.planKind === 'live' && chosen.length) {
-      var ready = await waitForLiveReadyGroup(chosen.map(function (item) { return item.id; }),
-        pageNumber(bundle.drawer), bundle.rows.map(function (item) { return item.id; }));
-      bundle = ready.bundle;
-      chosen = ready.chosen;
-      if (chosen.some(function (item) { return !eligibleForChase(item); })) {
-        if ((retries || 0) >= 2) throw new Error('演练选材时追投状态持续变化，未勾选；请稍后重试');
-        addLog('演练选材时有素材变为调控中、已暂停或审核不通过，重新筛选当前页');
-        return previewCurrentPage((retries || 0) + 1);
-      }
-      validateRows(chosen);
-    }
-    if (chosen.length) {
-      await selectRows(bundle, chosen, 0);
-      state.previewSelection = {
-        accountId: cfg.accountId,
-        planId: cfg.planId,
-        page: pageNumber(bundle.drawer),
-        ids: chosen.map(function (item) { return item.id; })
-      };
-    }
-    state.report = [
-      '演练完成：只检查当前页；未打开追投弹窗，未提交任务。',
-      '账户：' + cfg.accountName,
-      '计划：' + cfg.planName,
-      cfg.mode === 'date' ? '创建日期区间：' + cfg.startDate + ' 至 ' + cfg.endDate + '（含两端）' :
-        'ROI 阈值：≥' + cfg.roiThreshold,
-      '当前页：第' + pageNumber(bundle.drawer) + '页；本页素材：' + bundle.rows.length + '条',
-      '本页勾选：' + chosen.length + '/' + size + '条' + (chosen.length && chosen.length < size ? '（当前页不足设定组数）' : ''),
-      detail || (chosen.length ? '素材 ID：' + chosen.map(function (item) { return item.id; }).join('、') : '当前页没有符合条件的素材'),
-      '如开始正式执行，脚本会先核对并清除本次演练勾选，然后重新选材。'
-    ].join('\n');
-    setPhase(chosen.length ? '演练完成；已勾选一组示范素材，未提交' : '演练完成；本页未勾选，未提交');
-    addLog('演练当前页勾选' + chosen.length + '条；未提交');
   }
 
   function setInputValue(input, value) {
@@ -2219,7 +2097,6 @@
       return el;
     };
     var cfg = state.config;
-    cfg.dryRun = get('dry-run').checked;
     cfg.budget = Number(get('budget').value);
     if (cfg.planKind === 'live' || cfg.mode === 'date') cfg.tailMin = Number(get('tail-min').value);
     if (cfg.planKind === 'live') {
@@ -2367,16 +2244,6 @@
       state.config.planName = '';
       validateConfig(true);
       if (!result.plans.length) throw new Error('本账户没有投放中的直播计划');
-      if (state.config.dryRun) {
-        state.report = '直播在投计划扫描完成；演练未勾选或提交。\n' +
-          '账户：' + result.account.accountName + '\n在投计划：' +
-          result.plans.map(function (p) { return p.name + '（' + p.id + '）'; }).join('、') +
-          '\n未执行计划：' + (result.skipped.length ? result.skipped.map(function (p) {
-            return p.name + '（' + p.id + '）：' + p.reason;
-          }).join('；') : '无');
-        setPhase('账户计划扫描完成；未提交');
-        return;
-      }
       if (state.batch && ['navigating', 'running', 'needs_review'].includes(state.batch.status)) {
         throw new Error('已有未完成的直播批量任务，请先人工核对');
       }
@@ -2447,7 +2314,7 @@
       }
       state.config = Object.assign({}, batch.config, {
         accountId: current.accountId, accountName: current.accountName,
-        planId: current.planId, planName: current.planName, planKind: 'live', dryRun: false
+        planId: current.planId, planName: current.planName, planKind: 'live'
       });
       batch.status = 'running';
       saveBatch();
@@ -2558,7 +2425,6 @@
       state.viewportLock = checkpoint.viewport;
       if (viewportChanged()) throw new Error('刷新后浏览器窗口、屏幕分辨率或缩放比例已改变');
       state.config = Object.assign({}, checkpoint.config);
-      state.config.dryRun = false;
       state.currentRun = run;
       state.logs = (run.logs || []).slice(-60);
       state.busy = true;
@@ -2675,16 +2541,10 @@
     state.report = '';
     render();
     try {
-      var live = !state.config.dryRun;
       await dismissKnownPromo();
       validateConfig();
-      await clearPreviewSelection();
-      if (!live) {
-        await ensureSourceFilter();
-        await ensurePageSize(state.config.mode === 'roi' ? roiPageSize() : (state.config.planKind === 'live' ? 100 : 20));
-        await ensureSort(state.config.mode === 'roi' ? '综合营销ROI' : '创建时间');
-        await previewCurrentPage();
-        return;
+      if (selectedCount(context('creative').drawer) !== 0) {
+        throw new Error('页面已有勾选素材，请先手动取消后再开始追投');
       }
       var cfg = state.config;
       var run = state.resumeRun || {
@@ -2823,7 +2683,7 @@
       '</style>',
       '<button class="launcher" id="launch" title="点击展开，拖动可调整位置" aria-label="展开千川追投助手" style="display:', state.open === false ? 'block' : 'none', ';top:', esc(state.launcherTop), '%">追投助手</button>',
       '<div class="panel" style="display:', state.open === false ? 'none' : 'flex', '">',
-      '<div class="head"><strong>千川素材追投助手 v0.4.31</strong><button id="close" title="最小化" aria-label="最小化助手">−</button></div>',
+      '<div class="head"><strong>千川素材追投助手 v0.4.37</strong><button id="close" title="最小化" aria-label="最小化助手">−</button></div>',
       '<div class="body">',
       '<div class="card"><div class="muted">锁定账户 / ', cfg.planKind === 'live' ? '推直播间计划' : '商品自选计划', '</div>',
       '<strong>', esc(cfg.accountName || '尚未锁定'), '</strong><br>',
@@ -2832,8 +2692,8 @@
       esc(cfg.planId || '计划 ID 待读取'), '<br>',
       '<button class="btn" id="capture" style="margin-top:7px">锁定当前素材页计划</button></div>',
       cfg.planKind === 'live' && location.pathname === '/overall-prom' ?
-        '<div class="card"><strong>账户内全部在投直播计划</strong><div class="small">演练只扫描计划列表；关闭演练后逐条处理全部在投直播计划。每计划独立计组数；异常时停止批量流程。</div><button class="btn primary" id="batch-start" style="width:100%;margin-top:7px">' +
-        (cfg.dryRun ? '扫描全部在投直播计划（不提交）' : '开始全部在投直播计划追投') + '</button></div>' : '',
+        '<div class="card"><strong>账户内全部在投直播计划</strong><div class="small">逐条处理账户内全部在投直播计划。每计划独立计组数；异常时停止批量流程。</div><button class="btn primary" id="batch-start" style="width:100%;margin-top:7px">' +
+        '开始全部在投直播计划追投' + '</button></div>' : '',
       state.batch && state.batch.status !== 'complete' ?
         '<div class="card"><strong>直播批量进度：</strong>' + esc(state.batch.status) + '，第' +
         esc((state.batch.index || 0) + 1) + '/' + esc(state.batch.plans.length) + '条计划。' +
@@ -2898,10 +2758,9 @@
       '<div class="small">可再次执行同一计划；本地历史提交记录仅用于核查，不阻止新一轮创建。千川明确提示“操作失败”且原弹窗、素材和参数不变时，只重试提交一次；结果不明或超时仍会停止。</div>',
       '<div class="small">正常追投结束后统一进入调控页核查；中途异常或手动停止时留在素材页，待手动核查，不自动重提。</div>',
       '<div class="hint">推商品翻页前先提交本页余量，再清空勾选并翻页；不足设定条数也会单独成组，预算仍按单组设置，并计入组数上限。</div>',
-      '<label class="row"><input id="dry-run" type="checkbox" ', cfg.dryRun ? 'checked' : '', '> 演练模式：只检查当前页，勾选最多一组，不提交</label>',
-      '<div class="small warn">正式执行仅限当前锁定计划。演练勾选会在正式开始前核对并清除；运行中不操作原计划预算、ROI 目标和投放状态。</div>',
+      '<div class="small warn">单计划追投仅操作当前锁定的计划。运行中不操作原计划预算、ROI 目标和投放状态。</div>',
       '<div class="buttons"><button class="btn primary" id="start" ', state.busy ? 'disabled' : '', '>',
-      cfg.dryRun ? '检查并勾选一组（不提交）' : '开始追投并提交', '</button>',
+      '开始追投并提交', '</button>',
       '<button class="btn danger" id="stop" ', state.busy ? '' : 'disabled', '>停止</button></div>',
       '<button class="btn" id="recheck" style="width:100%;margin-top:8px" ', state.busy ? 'disabled' : '', '>只重新核查未核清任务（不提交）</button>',
       '<div class="section">执行状态</div><div class="status">', esc(status), '</div>',
@@ -2996,10 +2855,6 @@
     if (dash) dash.onchange = function () { cfg.dashPolicy = dash.value; };
     var strategy = shadow.getElementById('roi-strategy');
     if (strategy) strategy.onchange = function () { cfg.roiStrategy = strategy.value; render(); };
-    shadow.getElementById('dry-run').onchange = function (event) {
-      cfg.dryRun = event.target.checked;
-      render();
-    };
     shadow.getElementById('start').onclick = start;
     shadow.getElementById('recheck').onclick = recheckPending;
     shadow.getElementById('stop').onclick = function () {
@@ -3010,7 +2865,7 @@
     var copy = shadow.getElementById('copy');
     if (copy) copy.onclick = function () { GM_setClipboard(state.report, 'text'); addLog('报告已复制'); };
     if (state.busy) {
-      ['capture', 'budget', 'hours', 'bid', 'live-roi-target', 'live-goal', 'live-gender', 'tail-min', 'skip-controlling', 'max-groups', 'group-size', 'roi-threshold', 'roi-strategy', 'start-date', 'end-date', 'dash-policy', 'dry-run']
+      ['capture', 'budget', 'hours', 'bid', 'live-roi-target', 'live-goal', 'live-gender', 'tail-min', 'skip-controlling', 'max-groups', 'group-size', 'roi-threshold', 'roi-strategy', 'start-date', 'end-date', 'dash-policy']
         .forEach(function (id) {
           var el = shadow.getElementById(id);
           if (el) el.disabled = true;

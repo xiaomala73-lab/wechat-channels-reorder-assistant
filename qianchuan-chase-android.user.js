@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Material Chase Assistant (Android)
 // @namespace    local.qianchuan.chase
-// @version      0.4.38
+// @version      0.4.39
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js
 // @description  Android old/new material status headers; product/live eligibility, semantic tables and pagination compatibility.
@@ -51,7 +51,6 @@
       startDate: '',
       endDate: '',
       dashPolicy: 'pause',
-      dryRun: true,
       skipControlling: true,
       bid: 10.5,
       liveGoal: '\u76F4\u64AD\u95F4\u6210\u4EA4',
@@ -67,7 +66,6 @@
     logs: [],
     report: '',
     currentRun: null,
-    previewSelection: null,
     batch: null,
     batchRunActive: false,
     refreshing: false,
@@ -348,7 +346,6 @@
       state.config.planId = current.planId;
       state.config.planName = current.planName;
       if (changed) {
-        state.previewSelection = null;
         state.config.mode = 'roi';
         state.config.budget = 100;
         state.config.hours = 24;
@@ -367,7 +364,6 @@
         state.config.liveGender = '\u4E0D\u9650';
         state.config.tailMin = 5;
       }
-      state.config.dryRun = true;
       state.currentRun = null;
       state.report = '';
       state.phase = '\u5DF2\u9501\u5B9A\u5F53\u524D' + (current.planKind === 'live' ? '\u76F4\u64AD' : '\u5546\u54C1\u81EA\u9009') + '\u8BA1\u5212\uFF1B\u53EF\u4E3B\u52A8\u518D\u6B21\u521B\u5EFA\u8FFD\u6295\u4EFB\u52A1';
@@ -1052,124 +1048,6 @@
         return !current || !current.check.checked;
       })) throw new Error('\u6574\u7EC4\u7D20\u6750\u52FE\u9009\u72B6\u6001\u4E0E\u76EE\u6807 ID \u4E0D\u4E00\u81F4');
     }
-  }
-
-  async function clearPreviewSelection() {
-    var current = context('creative');
-    var drawer = current.drawer;
-    var saved = state.previewSelection;
-    var count = selectedCount(drawer);
-    if (!saved) {
-      if (count !== 0) throw new Error('\u9875\u9762\u5B58\u5728\u975E\u672C\u6B21\u6F14\u7EC3\u7684\u9057\u7559\u52FE\u9009\uFF0C\u8BF7\u5148\u624B\u52A8\u53D6\u6D88');
-      return;
-    }
-    if (saved.accountId !== current.accountId || saved.planId !== current.planId) {
-      throw new Error('\u6F14\u7EC3\u540E\u8D26\u6237\u6216\u8BA1\u5212\u5DF2\u53D8\u5316\uFF0C\u65E0\u6CD5\u5B89\u5168\u6E05\u9664\u52FE\u9009');
-    }
-    if (count === 0) {
-      state.previewSelection = null;
-      return;
-    }
-    if (pageNumber(drawer) !== saved.page || count !== saved.ids.length) {
-      throw new Error('\u6F14\u7EC3\u52FE\u9009\u7684\u9875\u7801\u6216\u6570\u91CF\u5DF2\u53D8\u5316\uFF0C\u8BF7\u624B\u52A8\u6838\u5BF9\u5E76\u53D6\u6D88\u52FE\u9009');
-    }
-    var table = materialTable(drawer);
-    var rows = Array.from(table.body.querySelectorAll('tbody tr')).filter(visible).map(function (tr) {
-      var cells = Array.from(tr.querySelectorAll(':scope > td'));
-      var match = (exactText(cells[1]).match(/\u7D20\u6750ID[\uFF1A:]\s*(\d+)/g) || []);
-      var id = match.length ? (match[match.length - 1].match(/\d+/) || [])[0] : '';
-      var check = cells[0] && cells[0].querySelector('input[type="checkbox"]');
-      if (!id || !check) throw new Error('\u65E0\u6CD5\u6838\u5BF9\u6F14\u7EC3\u52FE\u9009\u7684\u7D20\u6750\u884C');
-      return { id: id, check: check };
-    });
-    var checked = rows.filter(function (item) { return item.check.checked; });
-    if (!sameIds(checked.map(function (item) { return item.id; }), saved.ids)) {
-      throw new Error('\u5F53\u524D\u52FE\u9009\u7D20\u6750\u4E0E\u6F14\u7EC3\u8BB0\u5F55\u4E0D\u4E00\u81F4\uFF0C\u8BF7\u624B\u52A8\u6838\u5BF9\u5E76\u53D6\u6D88\u52FE\u9009');
-    }
-    if (checked.length === rows.length) {
-      var headerCheck = materialHeaderCheckbox(table);
-      if (!headerCheck.checked) throw new Error('\u8868\u5934\u5168\u9009\u72B6\u6001\u4E0D\u4E00\u81F4\uFF0C\u672A\u6E05\u9664\u6F14\u7EC3\u52FE\u9009');
-      await safeClick(headerCheck, '\u53D6\u6D88\u6F14\u7EC3\u8868\u5934\u5168\u9009');
-    } else {
-      for (var i = 0; i < checked.length; i++) {
-        await clickMaterialCheckbox(checked[i].id, false, checked.length - i);
-      }
-    }
-    await waitFor(function () {
-      return selectedCount(context('creative').drawer) === 0;
-    }, '\u6F14\u7EC3\u52FE\u9009\u5168\u90E8\u6E05\u9664');
-    state.previewSelection = null;
-    addLog('\u5DF2\u6838\u5BF9\u5E76\u6E05\u9664\u4E0A\u4E00\u8F6E\u6F14\u7EC3\u7684' + saved.ids.length + '\u6761\u52FE\u9009');
-  }
-
-  async function previewCurrentPage(retries) {
-    var cfg = state.config;
-    var bundle = cfg.planKind === 'live' ? await waitForLiveStatusPage() : await waitForProductRowsReady();
-    if (selectedCount(bundle.drawer) !== 0) throw new Error('\u5F53\u524D\u9875\u5B58\u5728\u9057\u7559\u52FE\u9009\uFF0C\u6F14\u7EC3\u672A\u7EE7\u7EED');
-    var size = cfg.mode === 'roi' ? cfg.roiGroupSize : cfg.dateGroupSize;
-    var chosen = [];
-    var detail = '';
-    if (cfg.mode === 'date') {
-      var dateRows = bundle.rows.filter(function (item) {
-        return item.date >= cfg.startDate && item.date <= cfg.endDate && eligibleForChase(item);
-      });
-      chosen = dateRows.slice(0, size);
-      if (chosen.length < size && chosen.length < cfg.tailMin) {
-        detail = '\u672C\u9875\u4EC5\u6709' + chosen.length + '\u6761\u533A\u95F4\u5185\u7D20\u6750\uFF0C\u4E0D\u8DB3\u4E00\u7EC4\u4E14\u4F4E\u4E8E\u5C3E\u7EC4' + cfg.tailMin + '\u6761\u4E0B\u9650\uFF1B\u672A\u52FE\u9009';
-        chosen = [];
-      }
-    } else if (cfg.roiStrategy === 'strict') {
-      for (var i = 0; i < bundle.rows.length && chosen.length < size; i++) {
-        if (!eligibleForChase(bundle.rows[i])) continue;
-        if (bundle.rows[i].roi === null || bundle.rows[i].roi < cfg.roiThreshold) break;
-        chosen.push(bundle.rows[i]);
-      }
-    } else {
-      var selectableRows = bundle.rows.filter(eligibleForChase);
-      var hasBelow = selectableRows.some(function (item) {
-        return item.roi !== null && item.roi < cfg.roiThreshold;
-      });
-      var hasDash = selectableRows.some(function (item) { return item.roi === null; });
-      if (hasDash && !hasBelow && cfg.dashPolicy === 'pause') {
-        detail = '\u672C\u9875 ROI \u51FA\u73B0\u201C\u2014\u201D\uFF0C\u6309\u5F53\u524D\u7B56\u7565\u6682\u505C\uFF1B\u672A\u52FE\u9009';
-      } else {
-        chosen = selectableRows.slice(0, size);
-      }
-    }
-    if (cfg.planKind === 'live' && chosen.length) {
-      var ready = await waitForLiveReadyGroup(chosen.map(function (item) { return item.id; }),
-        pageNumber(bundle.drawer), bundle.rows.map(function (item) { return item.id; }));
-      bundle = ready.bundle;
-      chosen = ready.chosen;
-      if (chosen.some(function (item) { return !eligibleForChase(item); })) {
-        if ((retries || 0) >= 2) throw new Error('\u6F14\u7EC3\u9009\u6750\u65F6\u8FFD\u6295\u72B6\u6001\u6301\u7EED\u53D8\u5316\uFF0C\u672A\u52FE\u9009\uFF1B\u8BF7\u7A0D\u540E\u91CD\u8BD5');
-        addLog('\u6F14\u7EC3\u9009\u6750\u65F6\u6709\u7D20\u6750\u53D8\u4E3A\u8C03\u63A7\u4E2D\u3001\u5DF2\u6682\u505C\u6216\u5BA1\u6838\u4E0D\u901A\u8FC7\uFF0C\u91CD\u65B0\u7B5B\u9009\u5F53\u524D\u9875');
-        return previewCurrentPage((retries || 0) + 1);
-      }
-      validateRows(chosen);
-    }
-    if (chosen.length) {
-      await selectRows(bundle, chosen, 0);
-      state.previewSelection = {
-        accountId: cfg.accountId,
-        planId: cfg.planId,
-        page: pageNumber(bundle.drawer),
-        ids: chosen.map(function (item) { return item.id; })
-      };
-    }
-    state.report = [
-      '\u6F14\u7EC3\u5B8C\u6210\uFF1A\u53EA\u68C0\u67E5\u5F53\u524D\u9875\uFF1B\u672A\u6253\u5F00\u8FFD\u6295\u5F39\u7A97\uFF0C\u672A\u63D0\u4EA4\u4EFB\u52A1\u3002',
-      '\u8D26\u6237\uFF1A' + cfg.accountName,
-      '\u8BA1\u5212\uFF1A' + cfg.planName,
-      cfg.mode === 'date' ? '\u521B\u5EFA\u65E5\u671F\u533A\u95F4\uFF1A' + cfg.startDate + ' \u81F3 ' + cfg.endDate + '\uFF08\u542B\u4E24\u7AEF\uFF09' :
-        'ROI \u9608\u503C\uFF1A\u2265' + cfg.roiThreshold,
-      '\u5F53\u524D\u9875\uFF1A\u7B2C' + pageNumber(bundle.drawer) + '\u9875\uFF1B\u672C\u9875\u7D20\u6750\uFF1A' + bundle.rows.length + '\u6761',
-      '\u672C\u9875\u52FE\u9009\uFF1A' + chosen.length + '/' + size + '\u6761' + (chosen.length && chosen.length < size ? '\uFF08\u5F53\u524D\u9875\u4E0D\u8DB3\u8BBE\u5B9A\u7EC4\u6570\uFF09' : ''),
-      detail || (chosen.length ? '\u7D20\u6750 ID\uFF1A' + chosen.map(function (item) { return item.id; }).join('\u3001') : '\u5F53\u524D\u9875\u6CA1\u6709\u7B26\u5408\u6761\u4EF6\u7684\u7D20\u6750'),
-      '\u5982\u5F00\u59CB\u6B63\u5F0F\u6267\u884C\uFF0C\u811A\u672C\u4F1A\u5148\u6838\u5BF9\u5E76\u6E05\u9664\u672C\u6B21\u6F14\u7EC3\u52FE\u9009\uFF0C\u7136\u540E\u91CD\u65B0\u9009\u6750\u3002'
-    ].join('\n');
-    setPhase(chosen.length ? '\u6F14\u7EC3\u5B8C\u6210\uFF1B\u5DF2\u52FE\u9009\u4E00\u7EC4\u793A\u8303\u7D20\u6750\uFF0C\u672A\u63D0\u4EA4' : '\u6F14\u7EC3\u5B8C\u6210\uFF1B\u672C\u9875\u672A\u52FE\u9009\uFF0C\u672A\u63D0\u4EA4');
-    addLog('\u6F14\u7EC3\u5F53\u524D\u9875\u52FE\u9009' + chosen.length + '\u6761\uFF1B\u672A\u63D0\u4EA4');
   }
 
   function setInputValue(input, value) {
@@ -2359,7 +2237,6 @@
       return el;
     };
     var cfg = state.config;
-    cfg.dryRun = get('dry-run').checked;
     cfg.budget = Number(get('budget').value);
     if (cfg.planKind === 'live') {
       cfg.liveGoal = get('live-goal').value;
@@ -2503,16 +2380,6 @@
       state.config.planName = '';
       validateConfig(true);
       if (!result.plans.length) throw new Error('\u672C\u8D26\u6237\u6CA1\u6709\u6295\u653E\u4E2D\u7684\u76F4\u64AD\u8BA1\u5212');
-      if (state.config.dryRun) {
-        state.report = '\u76F4\u64AD\u5728\u6295\u8BA1\u5212\u626B\u63CF\u5B8C\u6210\uFF1B\u6F14\u7EC3\u672A\u52FE\u9009\u6216\u63D0\u4EA4\u3002\n' +
-          '\u8D26\u6237\uFF1A' + result.account.accountName + '\n\u5728\u6295\u8BA1\u5212\uFF1A' +
-          result.plans.map(function (p) { return p.name + '\uFF08' + p.id + '\uFF09'; }).join('\u3001') +
-          '\n\u672A\u6267\u884C\u8BA1\u5212\uFF1A' + (result.skipped.length ? result.skipped.map(function (p) {
-            return p.name + '\uFF08' + p.id + '\uFF09\uFF1A' + p.reason;
-          }).join('\uFF1B') : '\u65E0');
-        setPhase('\u8D26\u6237\u8BA1\u5212\u626B\u63CF\u5B8C\u6210\uFF1B\u672A\u63D0\u4EA4');
-        return;
-      }
       if (state.batch && ['navigating', 'running', 'needs_review'].includes(state.batch.status)) {
         throw new Error('\u5DF2\u6709\u672A\u5B8C\u6210\u7684\u76F4\u64AD\u6279\u91CF\u4EFB\u52A1\uFF0C\u8BF7\u5148\u4EBA\u5DE5\u6838\u5BF9');
       }
@@ -2583,7 +2450,7 @@
       }
       state.config = Object.assign({}, batch.config, {
         accountId: current.accountId, accountName: current.accountName,
-        planId: current.planId, planName: current.planName, planKind: 'live', dryRun: false
+        planId: current.planId, planName: current.planName, planKind: 'live'
       });
       batch.status = 'running';
       saveBatch();
@@ -2694,7 +2561,6 @@
       state.viewportLock = checkpoint.viewport;
       if (viewportChanged()) throw new Error('\u5237\u65B0\u540E\u6D4F\u89C8\u5668\u7A97\u53E3\u3001\u5C4F\u5E55\u5206\u8FA8\u7387\u6216\u7F29\u653E\u6BD4\u4F8B\u5DF2\u6539\u53D8');
       state.config = Object.assign({}, checkpoint.config);
-      state.config.dryRun = false;
       state.currentRun = run;
       state.logs = (run.logs || []).slice(-60);
       state.busy = true;
@@ -2811,16 +2677,10 @@
     state.report = '';
     render();
     try {
-      var live = !state.config.dryRun;
       await dismissKnownPromo();
       validateConfig();
-      await clearPreviewSelection();
-      if (!live) {
-        await ensureSourceFilter();
-        await ensurePageSize(state.config.mode === 'roi' ? roiPageSize() : (state.config.planKind === 'live' ? 100 : 20));
-        await ensureSort(state.config.mode === 'roi' ? '\u7EFC\u5408\u8425\u9500ROI' : '\u521B\u5EFA\u65F6\u95F4');
-        await previewCurrentPage();
-        return;
+      if (selectedCount(context('creative').drawer) !== 0) {
+        throw new Error('\u9875\u9762\u5DF2\u6709\u52FE\u9009\u7D20\u6750\uFF0C\u8BF7\u5148\u624B\u52A8\u53D6\u6D88\u540E\u518D\u5F00\u59CB\u8FFD\u6295');
       }
       var cfg = state.config;
       var run = state.resumeRun || {
@@ -3109,7 +2969,7 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       '</style>',
       '<button class="launcher" id="launch" title="\u70B9\u51FB\u5C55\u5F00\uFF0C\u62D6\u52A8\u53EF\u8C03\u6574\u4F4D\u7F6E" aria-label="\u5C55\u5F00\u5343\u5DDD\u8FFD\u6295\u52A9\u624B" style="display:', state.open === false ? 'block' : 'none', ';top:', esc(state.launcherTop), '%">\u8FFD\u6295\u52A9\u624B</button>',
       '<div class="panel" style="display:', state.open === false ? 'none' : 'flex', '">',
-      '<div class="head"><strong>\u5343\u5DDD\u7D20\u6750\u8FFD\u6295\u52A9\u624B v0.4.37</strong><button id="close" title="\u6700\u5C0F\u5316" aria-label="\u6700\u5C0F\u5316\u52A9\u624B">\u2212</button></div>',
+      '<div class="head"><strong>\u5343\u5DDD\u7D20\u6750\u8FFD\u6295\u52A9\u624B v0.4.39</strong><button id="close" title="\u6700\u5C0F\u5316" aria-label="\u6700\u5C0F\u5316\u52A9\u624B">\u2212</button></div>',
       '<div class="body">',
       '<div class="card"><div class="muted">\u9501\u5B9A\u8D26\u6237 / ', cfg.planKind === 'live' ? '\u63A8\u76F4\u64AD\u95F4\u8BA1\u5212' : '\u5546\u54C1\u81EA\u9009\u8BA1\u5212', '</div>',
       '<strong>', esc(cfg.accountName || '\u5C1A\u672A\u9501\u5B9A'), '</strong><br>',
@@ -3118,8 +2978,8 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       esc(cfg.planId || '\u8BA1\u5212 ID \u5F85\u8BFB\u53D6'), '<br>',
       '<button class="btn" id="capture" style="margin-top:7px">\u9501\u5B9A\u5F53\u524D\u7D20\u6750\u9875\u8BA1\u5212</button></div>',
       cfg.planKind === 'live' && location.pathname === '/overall-prom' ?
-        '<div class="card"><strong>\u8D26\u6237\u5185\u5168\u90E8\u5728\u6295\u76F4\u64AD\u8BA1\u5212</strong><div class="small">\u6F14\u7EC3\u53EA\u626B\u63CF\u8BA1\u5212\u5217\u8868\uFF1B\u5173\u95ED\u6F14\u7EC3\u540E\u9010\u6761\u5904\u7406\u5168\u90E8\u5728\u6295\u76F4\u64AD\u8BA1\u5212\u3002\u6BCF\u8BA1\u5212\u72EC\u7ACB\u8BA1\u7EC4\u6570\uFF1B\u5F02\u5E38\u65F6\u505C\u6B62\u6279\u91CF\u6D41\u7A0B\u3002</div><button class="btn primary" id="batch-start" style="width:100%;margin-top:7px">' +
-        (cfg.dryRun ? '\u626B\u63CF\u5168\u90E8\u5728\u6295\u76F4\u64AD\u8BA1\u5212\uFF08\u4E0D\u63D0\u4EA4\uFF09' : '\u5F00\u59CB\u5168\u90E8\u5728\u6295\u76F4\u64AD\u8BA1\u5212\u8FFD\u6295') + '</button></div>' : '',
+        '<div class="card"><strong>\u8D26\u6237\u5185\u5168\u90E8\u5728\u6295\u76F4\u64AD\u8BA1\u5212</strong><div class="small">\u9010\u6761\u5904\u7406\u8D26\u6237\u5185\u5168\u90E8\u5728\u6295\u76F4\u64AD\u8BA1\u5212\u3002\u6BCF\u8BA1\u5212\u72EC\u7ACB\u8BA1\u7EC4\u6570\uFF1B\u5F02\u5E38\u65F6\u505C\u6B62\u6279\u91CF\u6D41\u7A0B\u3002</div><button class="btn primary" id="batch-start" style="width:100%;margin-top:7px">' +
+        '\u5F00\u59CB\u5168\u90E8\u5728\u6295\u76F4\u64AD\u8BA1\u5212\u8FFD\u6295' + '</button></div>' : '',
       state.batch && state.batch.status !== 'complete' ?
         '<div class="card"><strong>\u76F4\u64AD\u6279\u91CF\u8FDB\u5EA6\uFF1A</strong>' + esc(state.batch.status) + '\uFF0C\u7B2C' +
         esc((state.batch.index || 0) + 1) + '/' + esc(state.batch.plans.length) + '\u6761\u8BA1\u5212\u3002' +
@@ -3182,10 +3042,9 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       '<div class="small">\u53EF\u518D\u6B21\u6267\u884C\u540C\u4E00\u8BA1\u5212\uFF1B\u672C\u5730\u5386\u53F2\u63D0\u4EA4\u8BB0\u5F55\u4EC5\u7528\u4E8E\u6838\u67E5\uFF0C\u4E0D\u963B\u6B62\u65B0\u4E00\u8F6E\u521B\u5EFA\u3002\u5343\u5DDD\u660E\u786E\u63D0\u793A\u201C\u64CD\u4F5C\u5931\u8D25\u201D\u4E14\u539F\u5F39\u7A97\u3001\u7D20\u6750\u548C\u53C2\u6570\u4E0D\u53D8\u65F6\uFF0C\u53EA\u91CD\u8BD5\u63D0\u4EA4\u4E00\u6B21\uFF1B\u7ED3\u679C\u4E0D\u660E\u6216\u8D85\u65F6\u4ECD\u4F1A\u505C\u6B62\u3002</div>',
       '<div class="small">\u6B63\u5E38\u8FFD\u6295\u7ED3\u675F\u540E\u7EDF\u4E00\u8FDB\u5165\u8C03\u63A7\u9875\u6838\u67E5\uFF1B\u4E2D\u9014\u5F02\u5E38\u6216\u624B\u52A8\u505C\u6B62\u65F6\u7559\u5728\u7D20\u6750\u9875\uFF0C\u5F85\u624B\u52A8\u6838\u67E5\uFF0C\u4E0D\u81EA\u52A8\u91CD\u63D0\u3002</div>',
       '<div class="hint">\u63A8\u5546\u54C1\u7FFB\u9875\u524D\u5148\u63D0\u4EA4\u672C\u9875\u4F59\u91CF\uFF0C\u518D\u6E05\u7A7A\u52FE\u9009\u5E76\u7FFB\u9875\uFF1B\u4E0D\u8DB3\u8BBE\u5B9A\u6761\u6570\u4E5F\u4F1A\u5355\u72EC\u6210\u7EC4\uFF0C\u9884\u7B97\u4ECD\u6309\u5355\u7EC4\u8BBE\u7F6E\uFF0C\u5E76\u8BA1\u5165\u7EC4\u6570\u4E0A\u9650\u3002</div>',
-      '<label class="row"><input id="dry-run" type="checkbox" ', cfg.dryRun ? 'checked' : '', '> \u6F14\u7EC3\u6A21\u5F0F\uFF1A\u53EA\u68C0\u67E5\u5F53\u524D\u9875\uFF0C\u52FE\u9009\u6700\u591A\u4E00\u7EC4\uFF0C\u4E0D\u63D0\u4EA4</label>',
-      '<div class="small warn">\u6B63\u5F0F\u6267\u884C\u4EC5\u9650\u5F53\u524D\u9501\u5B9A\u8BA1\u5212\u3002\u6F14\u7EC3\u52FE\u9009\u4F1A\u5728\u6B63\u5F0F\u5F00\u59CB\u524D\u6838\u5BF9\u5E76\u6E05\u9664\uFF1B\u8FD0\u884C\u4E2D\u4E0D\u64CD\u4F5C\u539F\u8BA1\u5212\u9884\u7B97\u3001ROI \u76EE\u6807\u548C\u6295\u653E\u72B6\u6001\u3002</div>',
+      '<div class="small warn">\u5355\u8BA1\u5212\u8FFD\u6295\u4EC5\u64CD\u4F5C\u5F53\u524D\u9501\u5B9A\u7684\u8BA1\u5212\u3002\u8FD0\u884C\u4E2D\u4E0D\u64CD\u4F5C\u539F\u8BA1\u5212\u9884\u7B97\u3001ROI \u76EE\u6807\u548C\u6295\u653E\u72B6\u6001\u3002</div>',
       '<div class="buttons"><button class="btn primary" id="start" ', state.busy ? 'disabled' : '', '>',
-      cfg.dryRun ? '\u68C0\u67E5\u5E76\u52FE\u9009\u4E00\u7EC4\uFF08\u4E0D\u63D0\u4EA4\uFF09' : '\u5F00\u59CB\u8FFD\u6295\u5E76\u63D0\u4EA4', '</button>',
+      '\u5F00\u59CB\u8FFD\u6295\u5E76\u63D0\u4EA4', '</button>',
       '<button class="btn danger" id="stop" ', state.busy ? '' : 'disabled', '>\u505C\u6B62</button></div>',
       '<button class="btn" id="recheck" style="width:100%;margin-top:8px" ', state.busy ? 'disabled' : '', '>\u53EA\u91CD\u65B0\u6838\u67E5\u672A\u6838\u6E05\u4EFB\u52A1\uFF08\u4E0D\u63D0\u4EA4\uFF09</button>',
       '<div class="section">\u6267\u884C\u72B6\u6001</div><div class="status">', esc(status), '</div>',
@@ -3254,10 +3113,6 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
     if (dash) dash.onchange = function () { cfg.dashPolicy = dash.value; };
     var strategy = shadow.getElementById('roi-strategy');
     if (strategy) strategy.onchange = function () { cfg.roiStrategy = strategy.value; render(); };
-    shadow.getElementById('dry-run').onchange = function (event) {
-      cfg.dryRun = event.target.checked;
-      render();
-    };
     shadow.getElementById('start').onclick = start;
     shadow.getElementById('recheck').onclick = recheckPending;
     shadow.getElementById('stop').onclick = function () {
@@ -3268,7 +3123,7 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
     var copy = shadow.getElementById('copy');
     if (copy) copy.onclick = function () { GM_setClipboard(state.report, 'text'); addLog('\u62A5\u544A\u5DF2\u590D\u5236'); };
     if (state.busy) {
-      ['capture', 'budget', 'hours', 'bid', 'live-roi-target', 'live-goal', 'live-gender', 'tail-min', 'skip-controlling', 'max-groups', 'group-size', 'roi-threshold', 'roi-strategy', 'start-date', 'end-date', 'dash-policy', 'dry-run']
+      ['capture', 'budget', 'hours', 'bid', 'live-roi-target', 'live-goal', 'live-gender', 'tail-min', 'skip-controlling', 'max-groups', 'group-size', 'roi-threshold', 'roi-strategy', 'start-date', 'end-date', 'dash-policy']
         .forEach(function (id) {
           var el = shadow.getElementById(id);
           if (el) el.disabled = true;

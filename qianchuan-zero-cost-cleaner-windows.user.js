@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巨量千川零消耗素材清理助手
 // @namespace    local.qianchuan.empty-cost-cleaner
-// @version      1.1.5
+// @version      1.1.6
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-windows.user.js
 // @description  自选投放视频清理；末页保留一条；AIGC警告临时逐条排查，补标成功立即恢复批量删除
@@ -121,8 +121,11 @@
       }
     } else {
       if (!document.querySelector('[id$="-tab-1"][aria-selected="true"]')) throw new Error('当前不是商品自选计划');
-      const active = Array.from(document.querySelectorAll('[role="tab"][aria-selected="true"]')).map(text);
-      if (!active.includes('商品') || !active.includes('商品自选')) throw new Error('当前不是商品→商品自选');
+      const active = Array.from(document.querySelectorAll('[role="tab"][aria-selected="true"]')).filter(visible).map(text);
+      const oldSelfSelect = active.includes('商品自选');
+      const newSelfSelect = active.includes('计划视图') && Array.from(document.querySelectorAll('label')).some(label =>
+        visible(label) && text(label) === '商品自选' && label.querySelector('input[type="radio"]')?.checked);
+      if (!active.includes('商品') || !(oldSelfSelect || newSelfSelect)) throw new Error('请打开商品→计划视图→商品自选（旧版：商品→商品自选）');
     }
     if (!ignoreLock && (!state.lock || state.lock.accountId !== accountId || state.lock.planId !== planId ||
       state.lock.accountName !== accountName || state.lock.planName !== planName ||
@@ -730,7 +733,7 @@
     const planLabel = live ? '直播在投计划' : '商品在投计划';
     const sourceLabel = live ? '视频类型为自选投放视频' : '素材类型为自选投放素材';
     shadow.innerHTML = css + `<button class="launcher" id="launch" title="点击展开，拖动调整位置" aria-label="展开千川零消耗素材清理助手" style="display:${state.panelOpen?'none':'block'};top:${escapeHTML(state.launcherTop)}%">清理助手</button>
-      <div class="panel" style="display:${state.panelOpen?'flex':'none'}"><div class="head"><div><strong>千川零消耗素材清理助手</strong><small>v1.1.4 · ${planLabel} · 自选投放视频</small></div><button id="close" title="最小化" aria-label="最小化助手">−</button></div><div class="body">
+      <div class="panel" style="display:${state.panelOpen?'flex':'none'}"><div class="head"><div><strong>千川零消耗素材清理助手</strong><small>v1.1.6 · ${planLabel} · 自选投放视频</small></div><button id="close" title="最小化" aria-label="最小化助手">−</button></div><div class="body">
       <div class="card"><div class="eyebrow">锁定账户 / 当前计划</div><div class="title">${lock?escapeHTML(lock.accountName):'尚未锁定'}</div><div class="muted">${lock?escapeHTML(lock.accountId):''}</div><div class="title" style="margin-top:6px">${lock?escapeHTML(lock.planName):'请先打开素材页'}</div><div class="muted">${lock?escapeHTML(lock.planId):''}</div><div class="row"><button class="btn" id="lock" ${state.busy?'disabled':''}>锁定当前计划</button></div></div>
       <div class="card"><div class="eyebrow">筛选条件</div><div class="grid"><label class="field">创建日期严格早于<input id="cutoff" type="date" value="${escapeHTML(cfg.cutoff)}" ${state.busy?'disabled':''}></label><label class="field">最多删除条数<input id="quota" type="number" min="1" max="${MAX_QUOTA}" step="1" value="${escapeHTML(cfg.quota)}" ${state.busy?'disabled':''}></label></div><div class="hint">${live?'直播素材→视频页筛选“视频类型：自选投放视频”':'商品素材页筛选“素材类型：自选投放”'}，20 条/页；按<strong>综合成本(元)降序</strong>从末页往前检查。仅删成本为空（-、--、暂无数据或空白）、日期早于截止日、且无 AIGC跑量 标签的素材。</div></div>
       <div class="card"><div class="eyebrow">执行</div><div class="hint warn">先演练查看末页候选。末页全部合格时保留最后一条，避免删除后空页；其余合格素材优先整批处理。出现 AIGC 警告则取消本批，逐条排查；找到并补标 AIGC 素材后恢复批量删除，再遇警告才重新排查。提示不明确或删除结果未确认时立即停止，不重复提交。</div><div class="row"><button class="btn" id="preview" ${state.busy?'disabled':''}>检查末页</button><button class="btn primary" id="start" ${state.busy?'disabled':''}>开始清理</button><button class="btn stop" id="stop" ${state.busy?'':'disabled'}>停止</button></div></div>

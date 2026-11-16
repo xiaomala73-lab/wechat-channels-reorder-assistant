@@ -7,7 +7,7 @@
 | 千川助手 | Windows | 安卓 |
 | --- | --- | --- |
 | 直播定时调速 | [v1.2.8](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js) | [v1.2.11](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js) |
-| 调控 | [v0.1.13](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js) | [v0.1.18](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js) |
+| 调控 | [v0.1.14](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js) | [v0.1.19](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js) |
 | 素材追投 | [v0.4.37](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js) | [v0.4.39](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js) |
 | 零消耗素材清理 | [v1.1.7](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-windows.user.js) | [v1.1.9](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-android.user.js) |
 
@@ -23,6 +23,8 @@
 ## 调控助手：按计划 ID 预填默认值
 
 Windows `v0.1.13` / 安卓 `v0.1.18`：锁定推商品计划后，默认选择「商品低 ROI 批量删除（逐条执行）」并预填下表 ROI。锁定直播计划时保留适用的直播操作；选择「直播低 ROI 批量删除」后预填直播默认 ROI，不改变直播追加预算的 ROI、差值和追加金额。
+
+Windows `v0.1.14` / 安卓 `v0.1.19` 起，直播任务因「任务预算不足」暂停时，支付 ROI 达标且消耗达到当前预算才会入选追加清单。
 
 | 计划类型 | 计划 ID | 默认 ROI |
 | --- | --- | --- |

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Task Governor (Android)
 // @namespace    local.qianchuan.task-governor
-// @version      0.1.18
+// @version      0.1.19
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js
 // @description  Android-compatible task governor; preview and verify each page before deleting tasks or increasing budgets.
@@ -408,12 +408,15 @@
       if (!Number.isFinite(item.roi)) return false;
       if (params.action === 'live-delete') return /\u8c03\u63a7\u4e2d/.test(item.status) && item.roi < params.roi;
       if (params.action !== 'live-budget') return false;
+      if (!(item.roi >= params.roi) || !Number.isSafeInteger(item.budget) || item.budget < 0 ||
+          !Number.isSafeInteger(item.spend) || item.spend < 0) return false;
       const status = (item.status || '').replace(/\s+/g, '');
-      const budgetPaused = /\u5df2\u6682\u505c/.test(status) && /\u4efb\u52a1\u9884\u7b97\u4e0d\u8db3/.test(status) &&
-        !/\u624b\u52a8|\u4eba\u5de5|\u5df2\u7ed3\u675f|\u8c03\u63a7\u7ed3\u675f|\u5df2\u7ec8\u6b62|\u5df2\u53d6\u6d88|\u8d26\u6237\u4f59\u989d\u4e0d\u8db3/.test(status);
-      return Number.isSafeInteger(item.budget) && item.budget >= 0 &&
-        Number.isSafeInteger(item.spend) && item.spend >= 0 && item.roi >= params.roi &&
-        (budgetPaused || (/\u8c03\u63a7\u4e2d/.test(status) && item.budget - item.spend < params.gap));
+      const remaining = item.budget - item.spend;
+      if (/\u5df2\u6682\u505c/.test(status)) {
+        return item.spend > 0 && remaining <= 0 && /\u4efb\u52a1\u9884\u7b97\u4e0d\u8db3/.test(status) &&
+          !/\u624b\u52a8|\u4eba\u5de5|\u5df2\u7ed3\u675f|\u8c03\u63a7\u7ed3\u675f|\u5df2\u7ec8\u6b62|\u5df2\u53d6\u6d88|\u8d26\u6237\u4f59\u989d\u4e0d\u8db3/.test(status);
+      }
+      return /\u8c03\u63a7\u4e2d/.test(status) && remaining < params.gap;
     }
     function sameValues(a, b) {
       const equalNumber = (x, y) => x === y || (Number.isNaN(x) && Number.isNaN(y));
@@ -997,14 +1000,14 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
         `<label class="field">调控 ROI 低于（综合营销 / 支付共用）<input id="product-roi" type="number" min="0" step="0.01" value="${esc(cfg.productRoi)}" ${fieldDisabled}></label>` :
         '<div class="hint">\u9009\u62e9\u64cd\u4f5c\u540e\uff0c\u586b\u5199\u8be5\u64cd\u4f5c\u9700\u8981\u7684\u6761\u4ef6\u3002</div>';
       const conditionHint = action === 'live-delete' ? '\u4ec5\u7b5b\u9009\u5f53\u524d\u9875\u201c\u8c03\u63a7\u4e2d\u201d\u4e14 ROI \u4f4e\u4e8e\u9608\u503c\u7684\u4efb\u52a1\u3002' :
-        action === 'live-budget' ? 'ROI \u8fbe\u6807\u4e14\u6ee1\u8db3\u4efb\u4e00\u6761\u4ef6\uff1a\u8c03\u63a7\u4e2d\u4e14\u9884\u7b97\u4e0e\u6d88\u8017\u5dee\u503c\u4f4e\u4e8e\u9608\u503c\uff1b\u6216\u5df2\u6682\u505c\u4e14\u660e\u786e\u63d0\u793a\u201c\u4efb\u52a1\u9884\u7b97\u4e0d\u8db3\u201d\uff08\u6b64\u65f6\u4e0d\u518d\u8981\u6c42\u5dee\u503c\u4f4e\u4e8e\u9608\u503c\uff09\u3002\u5176\u4ed6\u6682\u505c\u539f\u56e0\u8df3\u8fc7\u3002' :
+        action === 'live-budget' ? 'ROI \u8fbe\u6807\u540e\uff0c\u8c03\u63a7\u4e2d\u4efb\u52a1\u6309\u9884\u7b97\u4e0e\u6d88\u8017\u7684\u5dee\u503c\u9608\u503c\u7b5b\u9009\u3002\u5df2\u6682\u505c\u4e14\u63d0\u793a\u201c\u4efb\u52a1\u9884\u7b97\u4e0d\u8db3\u201d\u7684\u4efb\u52a1\uff0c\u53ea\u6709\u6d88\u8017\u8fbe\u5230\u5f53\u524d\u9884\u7b97\u624d\u4f1a\u8ffd\u52a0\u3002' :
         action === 'product-delete' ? '只填一个 ROI 阈值，按页面实际显示的综合营销 ROI / 支付 ROI 判断；两列都显示时共用该阈值，任一列为“—”或低于阈值即符合条件，不相加、不取平均。仍要求综合成本和消耗都大于 0；未显示的列不参与判断。升级时旧阈值不一致会留空，请重新填写。' : '';
       const targets = p?.targets || [];
       const missingProductRoi = p?.kind === 'product' ? ['\u8c03\u63a7\u7efc\u5408\u8425\u9500ROI', '\u8c03\u63a7\u652f\u4ed8ROI']
         .filter(label => !p.roiLabels.includes(label)) : [];
       const previewItems = targets.slice(0, 100).map(x => `<div class="item"><b>${esc(x.name || x.id)}</b><span class="pill">ID ${esc(x.id)}</span>${p.params.action === 'product-delete' ? `<span class="pill">\u8c03\u63a7\u7efc\u5408\u8425\u9500ROI ${Number.isFinite(x.marketingRoi) ? esc(x.marketingRoi) : x.marketingRoiDash ? '\u2014' : '\u4e0d\u53ef\u7528'}</span><span class="pill">\u8c03\u63a7\u652f\u4ed8ROI ${Number.isFinite(x.paymentRoi) ? esc(x.paymentRoi) : x.paymentRoiDash ? '\u2014' : '\u4e0d\u53ef\u7528'}</span><span class="pill">\u7efc\u5408\u6210\u672c ${yuan(x.comprehensiveCost)} \u5143</span><span class="pill">\u8c03\u63a7\u6d88\u8017 ${yuan(x.spend)} \u5143</span>` : `<span class="pill">ROI ${esc(x.roi)}</span>`}${Number.isInteger(x.budget) ? `<span class="pill">\u9884\u7b97 ${yuan(x.budget)}</span><span class="pill">\u6d88\u8017 ${yuan(x.spend)}</span>` : ''}${p.params.action === 'live-budget' ? `<span class="pill">\u62df\u6539\u4e3a ${yuan(x.budget + p.params.add)}</span>` : ''}</div>`).join('');
       shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${state.open ? 'none' : 'block'};top:${esc(state.launcherTop)}%" title="\u70b9\u51fb\u5c55\u5f00\uff0c\u62d6\u52a8\u8c03\u6574\u4f4d\u7f6e">\u8c03\u63a7\u52a9\u624b</button>
-        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>\u5343\u5ddd\u8c03\u63a7\u52a9\u624b</strong><small>v0.1.18 \u5b89\u5353\u7248 \u00b7 \u5148\u68c0\u67e5\u672c\u9875\u518d\u6267\u884c</small></div><button id="minimize" title="\u6700\u5c0f\u5316">\u2212</button></div><div class="body">
+        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>\u5343\u5ddd\u8c03\u63a7\u52a9\u624b</strong><small>v0.1.19 \u5b89\u5353\u7248 \u00b7 \u5148\u68c0\u67e5\u672c\u9875\u518d\u6267\u884c</small></div><button id="minimize" title="\u6700\u5c0f\u5316">\u2212</button></div><div class="body">
         <div class="card"><div class="eyebrow">\u9501\u5b9a\u5f53\u524d\u8ba1\u5212</div><div class="title">${esc(lock?.planName || '\u5c1a\u672a\u9501\u5b9a')}</div><div class="muted">\u8d26\u6237 ${esc(lock?.accountId || '\u2014')} \u00b7 \u8ba1\u5212 ${esc(lock?.planId || '\u2014')} \u00b7 ${lock?.kind === 'live' ? '\u63a8\u76f4\u64ad' : lock?.kind === 'product' ? '\u63a8\u5546\u54c1' : '\u672a\u8bc6\u522b'}</div>${needsRelock ? '<div class="hint warn">\u5f53\u524d\u9875\u9762\u4e0e\u5df2\u9501\u5b9a\u8ba1\u5212\u4e0d\u540c\uff0c\u8bf7\u91cd\u65b0\u9501\u5b9a\u5f53\u524d\u8ba1\u5212\u3002</div>' : ''}<div class="row"><button id="lock" class="btn" ${state.busy ? 'disabled' : ''}>\u9501\u5b9a\u5f53\u524d\u8ba1\u5212</button></div></div>
         <div class="card"><div class="eyebrow">\u7b5b\u9009\u6761\u4ef6</div><label class="field">\u672c\u6b21\u64cd\u4f5c<select id="action" ${fieldDisabled}><option value="">\u8bf7\u9009\u62e9</option>${choices}</select></label>${conditionFields}<div class="hint">锁定商品计划时自动选择低 ROI 删除；名单内预填 ROI，名单外留空。可手动修改；重新锁定或重新选择直播低 ROI 删除会恢复默认值。</div>${conditionHint ? `<div class="hint">${conditionHint}</div>` : ''}</div>
         <div class="card"><div class="eyebrow">\u6267\u884c\u672c\u9875</div><div class="hint warn">\u5148\u68c0\u67e5\u5e76\u6838\u5bf9\u4efb\u52a1\u6e05\u5355\uff0c\u518d\u70b9\u51fb\u6267\u884c\u3002\u76f4\u64ad\u5220\u9664\u4ec5\u52fe\u9009\u672c\u9875\u5408\u683c\u4efb\u52a1\u5e76\u6279\u91cf\u5220\u9664\uff1b\u5546\u54c1\u5220\u9664\u9010\u6761\u6267\u884c\uff1b\u9884\u7b97\u9010\u6761\u6539\u4e3a\u5f53\u524d\u503c\u52a0\u8bbe\u5b9a\u91d1\u989d\u3002\u53ef\u5148\u5728\u5343\u5ddd\u9009 100 \u6761/\u9875\uff1b\u8de8\u9875\u8bf7\u9010\u9875\u68c0\u67e5\u3002\u5220\u9664\u540e\u4e0d\u53ef\u6062\u590d\u3002</div><div class="row"><button id="preview" class="btn" ${state.busy || !lock ? 'disabled' : ''}>\u68c0\u67e5\u672c\u9875</button><button id="execute" class="btn primary" ${state.busy || !p?.targets.length ? 'disabled' : ''}>\u6267\u884c\u672c\u9875 ${targets.length} \u6761</button><button id="stop" class="btn stop" ${state.busy ? '' : 'disabled'}>\u505c\u6b62</button></div>${p?.targets.length ? '<label class="check"><input id="ack" type="checkbox">\u6211\u5df2\u6838\u5bf9\u4e0b\u65b9\u4efb\u52a1 ID\u3001ROI \u548c\u91d1\u989d\uff0c\u786e\u8ba4\u6267\u884c\u672c\u9875\u64cd\u4f5c</label>' : ''}</div>

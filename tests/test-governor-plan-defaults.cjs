@@ -25,7 +25,7 @@ for(const platform of ['windows','android']){
   const {api,source}=load(platform);
   assert.deepEqual(JSON.parse(JSON.stringify(api.PLAN_ROI_DEFAULTS)),{product:products,live:lives});
   for(const id of [...Object.keys(products),...Object.keys(lives)])assert.match(id,/^\d{16}$/);
-  const version=platform==='windows'?'0.1.13':'0.1.18';
+  const version=platform==='windows'?'0.1.14':'0.1.19';
   assert.match(source,new RegExp('@version\\s+'+version.replaceAll('.','\\.')));
   for(const key of ['updateURL','downloadURL']) {
    const line=source.split('\n').find(line=>line.startsWith('// @'+key+' '));

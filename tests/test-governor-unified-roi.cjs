@@ -34,6 +34,23 @@ for (const platform of ['windows','android']) {
     assert.equal((source.match(/<input id="product-roi"/g)||[]).length,1);
     assert.doesNotMatch(source, /product-marketing-roi|product-payment-roi/);
   });
+  test(`${platform}: budget-paused tasks are eligible only after exhausting the current budget`, () => {
+    const {api} = load(platform, {liveBudgetRoi:'1.5', gap:'99', add:'300'}, '');
+    api.setAction('live-budget');
+    const params = api.settings();
+    const paused = {roi:1.66, status:'已暂停 任务预算不足', budget:100000, spend:100000};
+    assert.equal(api.eligible(paused, {...params, gap:0}), true);
+    assert.equal(api.eligible({...paused, budget:160000}, params), false);
+    assert.equal(api.eligible({...paused, budget:105000}, params), false);
+    assert.equal(api.eligible({...paused, budget:160000, spend:160000}, params), true);
+    assert.equal(api.eligible({...paused, roi:1.49}, params), false);
+    assert.equal(api.eligible({...paused, spend:NaN}, params), false);
+    assert.equal(api.eligible({...paused, budget:0, spend:0}, params), false);
+    assert.equal(api.eligible({...paused, status:'已暂停 手动暂停 任务预算不足'}, params), false);
+    assert.equal(api.eligible({...paused, status:'已暂停 账户余额不足'}, params), false);
+    assert.equal(api.eligible({...paused, status:'调控中', budget:105000}, params), true);
+    assert.equal(api.eligible({...paused, status:'调控中', budget:109900}, params), false);
+  });
   test(`${platform}: migrate equal or single old values, never guess unequal values`,()=>{
     for(const [old,expected] of [
       [{productMarketingRoi:'2.5',productPaymentRoi:'2.50'},'2.5'],

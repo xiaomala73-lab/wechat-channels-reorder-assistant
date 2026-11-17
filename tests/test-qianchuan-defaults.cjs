@@ -20,7 +20,7 @@ for (const platform of ['windows', 'android']) {
     assert.notEqual(start, -1);
     assert.notEqual(end, -1);
     const setup = source.slice(start, end);
-    const version = platform === 'windows' ? '1.2.9' : '1.2.12';
+    const version = platform === 'windows' ? '1.2.10' : '1.2.13';
     assert.match(source, new RegExp(`@version\\s+${version.replaceAll('.', '\\.')}\\b`));
 
     function load(saved) {

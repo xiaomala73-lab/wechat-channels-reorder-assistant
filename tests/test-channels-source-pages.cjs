@@ -57,20 +57,33 @@ const row=(id,name=id,budget=100)=>({id,name,budget,status:'已结束'});
  // Initial scan still starts from page 1, picks the foremost exact-name source, and stops when complete.
  e=environment([[row('fresh','A')],[row('old','A'),row('b','B')],[row('older','A')]],3);
  const found=new Map();await e.api.scanPages(['A','B'],found);assert.equal(found.get('A').id,'fresh');assert.deepEqual(e.jumps,[1,2]);
- // Match the first eligible exact name across pages, including the threshold itself.
+ // ROI filter examines only the very first same-name order, not first qualifying order.
  const roiRow=(id,name,status,roi,spent)=>({...row(id,name),status,roi,spent,hasRoiColumn:true});
+ for (const [first,second] of [
+  [roiRow('incomplete-first','D','加热中',5,99),roiRow('complete-second','D','已结束',5,100)],
+  [roiRow('low-first','D','已结束',1,100),roiRow('high-second','D','已结束',5,100)]
+ ]) {
+  e=environment([[first],[second]]);
+  const onlyFirst=new Map(); await e.api.scanPages(['D'],onlyFirst,2);
+  assert.deepEqual([...onlyFirst.values()],[], 'a later same-name order must not replace the first order');
+ }
+ e=environment([[roiRow('eligible-first','D','已结束',2,100)],
+  [roiRow('later-also-eligible','D','已结束',5,100)]]);
+ const exactFirst=new Map(); await e.api.scanPages(['D'],exactFirst,2);
+ assert.equal(exactFirst.get('D').id,'eligible-first');
+ // With ROI filtering, a later qualified duplicate cannot replace the first same-name row.
  e=environment([
   [roiRow('active','A','加热中',5,90),roiRow('partial','A','已结束 · 消耗完成',4,99.99),roiRow('low','A','已结束 · 消耗完成',1.9,100)],
   [roiRow('exact','A','已结束',2,100),roiRow('no-data','B','已结束 · 消耗完成',null,100),roiRow('unlisted','C','已结束 · 消耗完成',4,100)]
  ]);
  const filtered=new Map();
  await e.api.scanPages(['A','B'],filtered,2);
- assert.deepEqual([...filtered.values()].map(item=>item.id),['exact']);
+ assert.deepEqual([...filtered.values()],[]);
  e.state.names='A\nB';e.state.matches=[...filtered.values()];e.state.roiMinimum='2';
- assert.equal(e.api.selectedNames().join(','),'A');
+ assert.equal(e.api.selectedNames().join(','),'');
  assert.equal(e.api.parseRoi('２．５０'),2.5);
  assert.equal(e.api.parseRoi('—'),null);
  e=environment([[row('no-column')]]);
  await assert.rejects(e.api.scanPages(['no-column'],new Map(),2),/未识别到“直接成交ROI”列/);
- console.log('通过：记录页直达、同页复用、新单插入向后定位、更新其他待投订单页码、支付返回后复用、必要时回查、精确ID及名称预算保护、延迟加载、账户变化、停止和首轮最靠前匹配。');
+ console.log('通过：记录页直达、同页复用、新单插入向后定位、更新其他待投订单页码、支付返回后复用、必要时回查、精确ID及名称预算保护、延迟加载、账户变化、停止、ROI筛选仅判断首笔同名订单。');
 })().catch(error=>{console.error(error);process.exitCode=1;});

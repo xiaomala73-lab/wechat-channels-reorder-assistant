@@ -6,6 +6,10 @@ const products={
  '1871602977211450':'1.5','1867205504686219':'1.5','1861549677969523':'2.2',
  '1840851764337800':'2','1832800495529143':'2.3','1832698672535955':'2.3','1832698376359401':'2.3'};
 const lives={'1832698106712151':'2.3','1837421927864619':'1.5'};
+const liveBudget={
+ '1832698106712151':{roi:'2.3',gap:'99',add:'300'},
+ '1837421927864619':{roi:'1.5',gap:'99',add:'300'}
+};
 function load(platform,saved={},lock=null){
  const source=fs.readFileSync(`qianchuan-task-governor-${platform}.user.js`,'utf8');
  const store=new Map([['qc-task-governor-config-v1',saved],['qc-task-governor-lock-v1-test',lock]]);
@@ -15,7 +19,7 @@ function load(platform,saved={},lock=null){
  vm.runInContext(source.slice(source.indexOf('    const CFG_KEY'),source.indexOf("    host.style.cssText = 'position:fixed;z-index"))+`
  const shadow={getElementById:()=>null};
  function render(){};
- globalThis.api={cfg,state,lockCurrent,settings,PLAN_ROI_DEFAULTS,
+ globalThis.api={cfg,state,lockCurrent,settings,PLAN_ROI_DEFAULTS,PLAN_LIVE_BUDGET_DEFAULTS,
  lock(kind,planId,accountId='123'){detailIdentity=()=>({kind,planId,accountId,planName:'test'});lockCurrent();},
  select(action){changeAction(action);}};`,context);
  return {api:context.api,store,source};
@@ -23,9 +27,10 @@ function load(platform,saved={},lock=null){
 for(const platform of ['windows','android']){
  test(`${platform}: exact preset maps and version/update metadata`,()=>{
   const {api,source}=load(platform);
-  assert.deepEqual(JSON.parse(JSON.stringify(api.PLAN_ROI_DEFAULTS)),{product:products,live:lives});
+   assert.deepEqual(JSON.parse(JSON.stringify(api.PLAN_ROI_DEFAULTS)),{product:products,live:lives});
+   assert.deepEqual(JSON.parse(JSON.stringify(api.PLAN_LIVE_BUDGET_DEFAULTS)),liveBudget);
   for(const id of [...Object.keys(products),...Object.keys(lives)])assert.match(id,/^\d{16}$/);
-  const version=platform==='windows'?'0.1.14':'0.1.19';
+  const version=platform==='windows'?'0.1.15':'0.1.20';
   assert.match(source,new RegExp('@version\\s+'+version.replaceAll('.','\\.')));
   for(const key of ['updateURL','downloadURL']) {
    const line=source.split('\n').find(line=>line.startsWith('// @'+key+' '));
@@ -55,19 +60,30 @@ for(const platform of ['windows','android']){
  test(`${platform}: both live deletion defaults apply on selection`,()=>{
   const {api}=load(platform,{action:'live-budget',liveBudgetRoi:'4',gap:'10',add:'20'});
   for(const [id,roi] of Object.entries(lives)){
-   api.select('live-budget');api.lock('live',id); assert.equal(api.cfg.action,'live-budget');
+   api.lock('live',id); assert.equal(api.cfg.action,'live-budget');
    api.select('live-delete');assert.equal(api.cfg.liveDeleteRoi,roi);
    assert.equal(api.settings().roi,Number(roi));
-   assert.equal(api.cfg.liveBudgetRoi,'4');
+   api.select('live-budget');
+   assert.deepEqual({roi:api.cfg.liveBudgetRoi,gap:api.cfg.gap,add:api.cfg.add},liveBudget[id]);
   }
  });
+ test(`${platform}: live budget defaults apply by plan ID`,()=>{
+  const {api}=load(platform,{action:'live-delete',liveBudgetRoi:'9',gap:'10',add:'20'});
+  api.lock('live','1832698106712151');
+  assert.equal(api.cfg.action,'live-delete');
+  api.select('live-budget');
+  assert.deepEqual({roi:api.cfg.liveBudgetRoi,gap:api.cfg.gap,add:api.cfg.add},liveBudget['1832698106712151']);
+  api.lock('live','1837421927864619');
+  assert.deepEqual({roi:api.cfg.liveBudgetRoi,gap:api.cfg.gap,add:api.cfg.add},liveBudget['1837421927864619']);
+ });
  test(`${platform}: unknown or wrong-kind IDs clear ROI and require manual entry`,()=>{
-  const {api}=load(platform,{productRoi:'99',liveDeleteRoi:'99'});
+  const {api}=load(platform,{productRoi:'99',liveDeleteRoi:'99',liveBudgetRoi:'99',gap:'99',add:'99'});
   for(const id of ['9999999999999999',...Object.keys(lives)]){
    api.lock('product',id);assert.equal(api.cfg.productRoi,'');assert.throws(()=>api.settings(),/ROI/);
   }
   for(const id of ['9999999999999999',...Object.keys(products)]){
    api.lock('live',id);api.select('live-delete');assert.equal(api.cfg.liveDeleteRoi,'');
+   api.select('live-budget');assert.deepEqual({roi:api.cfg.liveBudgetRoi,gap:api.cfg.gap,add:api.cfg.add},{roi:'',gap:'',add:''});
    assert.throws(()=>api.settings(),/ROI/);
   }
  });

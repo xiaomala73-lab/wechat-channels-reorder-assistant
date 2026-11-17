@@ -7,7 +7,7 @@
 | 千川助手 | Windows | 安卓 |
 | --- | --- | --- |
 | 直播定时调速 | [v1.2.9](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js) | [v1.2.12](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js) |
-| 调控 | [v0.1.14](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js) | [v0.1.19](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js) |
+| 调控 | [v0.1.15](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js) | [v0.1.20](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js) |
 | 素材追投 | [v0.4.39](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js) | [v0.4.41](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js) |
 | 零消耗素材清理 | [v1.1.7](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-windows.user.js) | [v1.1.9](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-android.user.js) |
 
@@ -28,7 +28,7 @@
 
 Windows `v0.1.13` / 安卓 `v0.1.18`：锁定推商品计划后，默认选择「商品低 ROI 批量删除（逐条执行）」并预填下表 ROI。锁定直播计划时保留适用的直播操作；选择「直播低 ROI 批量删除」后预填直播默认 ROI，不改变直播追加预算的 ROI、差值和追加金额。
 
-Windows `v0.1.14` / 安卓 `v0.1.19` 起，直播任务因「任务预算不足」暂停时，支付 ROI 达标且消耗达到当前预算才会入选追加清单。
+Windows `v0.1.15` / 安卓 `v0.1.20` 起，直播任务因「任务预算不足」暂停时，支付 ROI 达标且消耗达到当前预算才会入选追加清单；以下两个直播计划锁定后选择「直播高 ROI 追加预算」会自动填入对应的 ROI、预算差值和追加金额。
 
 | 计划类型 | 计划 ID | 默认 ROI |
 | --- | --- | --- |
@@ -45,7 +45,12 @@ Windows `v0.1.14` / 安卓 `v0.1.19` 起，直播任务因「任务预算不足�
 | 直播低 ROI 删除 | `1832698106712151` | 2.3 |
 | 直播低 ROI 删除 | `1837421927864619` | 1.5 |
 
-名单外 ID 的删除 ROI 留空，必须手动填写，不继承其他计划的值。默认值可手动改写；普通重绘、检查本页和刷新同一已绑定计划不会覆盖手动值。重新点击「锁定当前计划」会恢复该计划默认值；重新选择「直播低 ROI 批量删除」会恢复直播默认值。旧版恢复锁定或账号/类型/计划绑定变化时重新应用默认值，防止跨计划误用阈值。预填不会自动检查或执行，商品删除仍逐条核对、逐条执行。
+| 直播高 ROI 追加预算计划 ID | 调控支付 ROI 不低于 | 预算 − 消耗低于（元） | 每条追加预算（元） |
+| --- | ---: | ---: | ---: |
+| `1832698106712151` | 2.3 | 99 | 300 |
+| `1837421927864619` | 1.5 | 99 | 300 |
+
+名单外 ID 的删除 ROI 和直播追加预算参数留空，必须手动填写，不继承其他计划的值。默认值可手动改写；普通重绘、检查本页和刷新同一已绑定计划不会覆盖手动值。重新点击「锁定当前计划」或重新选择对应直播操作会恢复该计划默认值。旧版恢复锁定或账号/类型/计划绑定变化时重新应用默认值，防止跨计划误用参数。预填不会自动检查或执行，商品删除仍逐条核对、逐条执行。
 
 ## 调控助手：共用 ROI 阈值
 

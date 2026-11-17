@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Task Governor (Android)
 // @namespace    local.qianchuan.task-governor
-// @version      0.1.19
+// @version      0.1.20
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js
 // @description  Android-compatible task governor; preview and verify each page before deleting tasks or increasing budgets.
@@ -201,10 +201,21 @@
       }),
       live: Object.freeze({ '1832698106712151': '2.3', '1837421927864619': '1.5' })
     });
+    const PLAN_LIVE_BUDGET_DEFAULTS = Object.freeze({
+      '1832698106712151': Object.freeze({ roi: '2.3', gap: '99', add: '300' }),
+      '1837421927864619': Object.freeze({ roi: '1.5', gap: '99', add: '300' })
+    });
     function defaultsScope(lock) { return [lock.accountId, lock.kind, lock.planId].join(':'); }
+    function applyLiveBudgetDefaults(lock) {
+      const defaults = lock?.kind === 'live' ? PLAN_LIVE_BUDGET_DEFAULTS[lock.planId] : null;
+      cfg.liveBudgetRoi = defaults?.roi || '';
+      cfg.gap = defaults?.gap || '';
+      cfg.add = defaults?.add || '';
+    }
     function applyPlanDefaults(lock) {
       cfg.productRoi = lock.kind === 'product' ? PLAN_ROI_DEFAULTS.product[lock.planId] || '' : '';
       cfg.liveDeleteRoi = lock.kind === 'live' ? PLAN_ROI_DEFAULTS.live[lock.planId] || '' : '';
+      applyLiveBudgetDefaults(lock);
       if (lock.kind === 'product') cfg.action = 'product-delete';
       else if (!['live-delete', 'live-budget'].includes(cfg.action)) cfg.action = '';
       cfg.planDefaultsScope = defaultsScope(lock);
@@ -217,6 +228,7 @@
       if (action === 'live-delete' && state.lock?.kind === 'live') {
         cfg.liveDeleteRoi = PLAN_ROI_DEFAULTS.live[state.lock.planId] || '';
       }
+      if (action === 'live-budget' && state.lock?.kind === 'live') applyLiveBudgetDefaults(state.lock);
       state.preview = null;
       GM_setValue(CFG_KEY, cfg);
       render();
@@ -1021,6 +1033,8 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
         const input = shadow.getElementById(id);
         if (input) input.onchange = e => { cfg[key] = e.target.value; state.preview = null; GM_setValue(CFG_KEY, cfg); render(); };
       }
+      const versionLabel = shadow.querySelector('.head small');
+      if (versionLabel) versionLabel.textContent = 'v0.1.20 安卓版 · 按计划预填 ROI 和追加预算参数 · 默认静默最小化';
       shadow.getElementById('minimize').onclick = () => { state.open = false; render(); };
       shadow.getElementById('lock').onclick = lockCurrent;
       shadow.getElementById('preview').onclick = previewPage;

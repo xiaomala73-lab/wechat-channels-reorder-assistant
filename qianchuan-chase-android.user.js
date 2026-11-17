@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Material Chase Assistant (Android)
 // @namespace    local.qianchuan.chase
-// @version      0.4.40
+// @version      0.4.41
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js
 // @description  Android old/new material status headers; product/live eligibility, semantic tables and pagination compatibility.
@@ -650,6 +650,12 @@
     addLog('\u6BCF\u9875\u6761\u6570\u5DF2\u8BBE\u7F6E\u4E3A' + size);
   }
 
+  function materialRowId(cell) {
+    var idMatches = Array.from(exactText(cell).matchAll(/\u7D20\u6750ID[\uFF1A:]\s*(\d+)/g));
+    if (!idMatches.length) throw new Error('\u65E0\u6CD5\u8BFB\u53D6\u7D20\u6750 ID');
+    return idMatches[idMatches.length - 1][1];
+  }
+
   function rowsNow() {
     var drawer = context('creative').drawer;
     if (state.config.planKind !== 'live' && !filterChip(drawer, '\u7D20\u6750\u7C7B\u578B\uFF1A' + FILTER_LABEL)) {
@@ -678,9 +684,7 @@
     var rows = Array.from(table.body.querySelectorAll('tbody tr')).filter(visible).map(function (tr) {
       var cells = Array.from(tr.querySelectorAll(':scope > td'));
       if (cells.length !== table.headers.length) throw new Error('\u7D20\u6750\u884C\u5217\u6570\u4E0E\u8868\u5934\u4E0D\u4E00\u81F4');
-      var idMatches = Array.from(exactText(cells[1]).matchAll(/\u7D20\u6750ID[\uFF1A:]\s*(\d+)/g));
-      if (!idMatches.length) throw new Error('\u65E0\u6CD5\u8BFB\u53D6\u7D20\u6750 ID');
-      var id = idMatches[idMatches.length - 1][1];
+      var id = materialRowId(cells[1]);
       if (seen.has(id)) throw new Error('\u540C\u9875\u51FA\u73B0\u91CD\u590D\u7D20\u6750 ID\uFF1A' + id);
       seen.add(id);
       var roiRaw = hi.roi >= 0 ? exactText(cells[hi.roi]) : '';
@@ -976,6 +980,23 @@
     }, '\u672A\u63D0\u4EA4\u7EC4\u7684\u52FE\u9009\u6E05\u96F6', 10000);
   }
 
+  function materialSelection(drawer, id) {
+    var body = materialTable(drawer).body;
+    var ids = [], target = null;
+    Array.from(body.querySelectorAll('tbody tr')).filter(visible).forEach(function (tr) {
+      var cells = tr.querySelectorAll(':scope > td');
+      var check = cells[0]?.querySelector('input[type="checkbox"]');
+      if (!check) throw new Error('\u7D20\u6750\u590D\u9009\u6846\u5C1A\u672A\u5C31\u7EEA');
+      var rowId = materialRowId(cells[1]);
+      if (rowId === id) {
+        if (target) throw new Error('\u540C\u9875\u51FA\u73B0\u91CD\u590D\u7D20\u6750 ID\uFF1A' + id);
+        target = check;
+      }
+      if (check.checked) ids.push(rowId);
+    });
+    return { ids: ids, target: target, count: selectedCount(drawer) };
+  }
+
   async function clickMaterialCheckbox(id, shouldCheck, expectedBefore) {
     await dismissKnownPromo();
     assertViewport();
@@ -1002,15 +1023,42 @@
     if (shouldCheck) assertRowsStillEligible([id]);
     assertViewport();
     if (state.stopRequested) throw new Error(state.stopMessage);
-    ready.item.check.click();
-    var expectedAfter = expectedBefore + (shouldCheck ? 1 : -1);
-    await waitFor(function () {
-      var current;
-      try { current = rowsNow(); } catch (_) { return false; }
-      var latest = current.rows.find(function (row) { return row.id === id; });
-      return latest && latest.check.checked === shouldCheck &&
-        selectedCount(current.drawer) === expectedAfter;
-    }, '\u7D20\u6750 ' + id + (shouldCheck ? '\u52FE\u9009' : '\u53D6\u6D88\u52FE\u9009') + '\u751F\u6548', 5000);
+    var page = pageNumber(ready.bundle.drawer);
+    var expectedIds = ready.bundle.rows.filter(function (row) { return row.check.checked; })
+      .map(function (row) { return row.id; });
+    var drawer = context('creative').drawer;
+    var before = materialSelection(drawer, id);
+    if (pageNumber(drawer) !== page || before.count !== expectedBefore || expectedIds.length !== expectedBefore ||
+        !sameIds(before.ids, expectedIds) || !visible(before.target) || before.target.checked === shouldCheck) {
+      throw new Error('\u70B9\u51FB\u524D\u7D20\u6750\u9875\u6216\u52FE\u9009\u72B6\u6001\u5DF2\u6539\u53D8\uFF1A' + id);
+    }
+    var wanted = shouldCheck ? expectedIds.concat(id) : expectedIds.filter(function (value) { return value !== id; });
+    before.target.click();
+    var observed = '';
+    try {
+      // Selection can settle before all the ROI and sort cells finish updating.
+      await waitFor(function () {
+        assertViewport();
+        if (state.stopRequested) throw new Error(state.stopMessage);
+        var current, currentPage;
+        try {
+          var currentDrawer = context('creative').drawer;
+          currentPage = pageNumber(currentDrawer);
+          current = materialSelection(currentDrawer, id);
+        } catch (error) {
+          observed = error.message;
+          return false;
+        }
+        if (currentPage !== page) throw new Error('\u7B49\u5F85\u52FE\u9009\u751F\u6548\u65F6\u7D20\u6750\u9875\u7801\u53D1\u751F\u53D8\u5316');
+        observed = '\u5DE5\u5177\u680F\u5DF2\u9009 ' + current.count + ' \u6761\uFF0C\u8868\u683C\u5DF2\u9009 ID\uFF1A' + (current.ids.join(', ') || '-') +
+          '\uFF1B\u9884\u671F ID\uFF1A' + (wanted.join(', ') || '-');
+        return current.target && current.target.checked === shouldCheck &&
+          current.count === wanted.length && sameIds(current.ids, wanted);
+      }, '\u7D20\u6750 ' + id + (shouldCheck ? '\u52FE\u9009' : '\u53D6\u6D88\u52FE\u9009') + '\u751F\u6548', 10000);
+    } catch (error) {
+      if (observed && error.message.startsWith('\u7B49\u5F85\u8D85\u65F6\uFF1A')) error.message += '\uFF1B\u6700\u540E\u8BFB\u5230\uFF1A' + observed;
+      throw error;
+    }
   }
 
   async function selectRows(bundle, chosen, alreadySelected) {
@@ -2969,7 +3017,7 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       '</style>',
       '<button class="launcher" id="launch" title="\u70B9\u51FB\u5C55\u5F00\uFF0C\u62D6\u52A8\u53EF\u8C03\u6574\u4F4D\u7F6E" aria-label="\u5C55\u5F00\u5343\u5DDD\u8FFD\u6295\u52A9\u624B" style="display:', state.open === false ? 'block' : 'none', ';top:', esc(state.launcherTop), '%">\u8FFD\u6295\u52A9\u624B</button>',
       '<div class="panel" style="display:', state.open === false ? 'none' : 'flex', '">',
-      '<div class="head"><strong>\u5343\u5DDD\u7D20\u6750\u8FFD\u6295\u52A9\u624B v0.4.39</strong><button id="close" title="\u6700\u5C0F\u5316" aria-label="\u6700\u5C0F\u5316\u52A9\u624B">\u2212</button></div>',
+      '<div class="head"><strong>\u5343\u5DDD\u7D20\u6750\u8FFD\u6295\u52A9\u624B v0.4.41</strong><button id="close" title="\u6700\u5C0F\u5316" aria-label="\u6700\u5C0F\u5316\u52A9\u624B">\u2212</button></div>',
       '<div class="body">',
       '<div class="card"><div class="muted">\u9501\u5B9A\u8D26\u6237 / ', cfg.planKind === 'live' ? '\u63A8\u76F4\u64AD\u95F4\u8BA1\u5212' : '\u5546\u54C1\u81EA\u9009\u8BA1\u5212', '</div>',
       '<strong>', esc(cfg.accountName || '\u5C1A\u672A\u9501\u5B9A'), '</strong><br>',

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巨量千川素材追投助手（安全锁定版）
 // @namespace    local.qianchuan.chase
-// @version      0.4.38
+// @version      0.4.39
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js
 // @description  商品日期追投可设最终尾组最低数量；直播日期允许未审核素材；整组复核补选；提交失败限重试一次
@@ -523,6 +523,12 @@
     addLog('每页条数已设置为' + size);
   }
 
+  function materialRowId(cell) {
+    var idMatches = Array.from(exactText(cell).matchAll(/素材ID[：:]\s*(\d+)/g));
+    if (!idMatches.length) throw new Error('无法读取素材 ID');
+    return idMatches[idMatches.length - 1][1];
+  }
+
   function rowsNow() {
     var drawer = context('creative').drawer;
     if (state.config.planKind !== 'live' && !filterChip(drawer, '素材类型：' + FILTER_LABEL)) {
@@ -546,9 +552,7 @@
     var rows = Array.from(table.body.querySelectorAll('tbody tr')).filter(visible).map(function (tr) {
       var cells = Array.from(tr.querySelectorAll(':scope > td'));
       if (cells.length !== table.headers.length) throw new Error('素材行列数与表头不一致');
-      var idMatches = Array.from(exactText(cells[1]).matchAll(/素材ID[：:]\s*(\d+)/g));
-      if (!idMatches.length) throw new Error('无法读取素材 ID');
-      var id = idMatches[idMatches.length - 1][1];
+      var id = materialRowId(cells[1]);
       if (seen.has(id)) throw new Error('同页出现重复素材 ID：' + id);
       seen.add(id);
       var roiRaw = hi.roi >= 0 ? exactText(cells[hi.roi]) : '';
@@ -848,6 +852,23 @@
     }, '未提交组的勾选清零', 10000);
   }
 
+  function materialSelection(drawer, id) {
+    var body = materialTable(drawer).body;
+    var ids = [], target = null;
+    Array.from(body.querySelectorAll('tbody tr')).filter(visible).forEach(function (tr) {
+      var cells = tr.querySelectorAll(':scope > td');
+      var check = cells[0]?.querySelector('input[type="checkbox"]');
+      if (!check) throw new Error('素材复选框尚未就绪');
+      var rowId = materialRowId(cells[1]);
+      if (rowId === id) {
+        if (target) throw new Error('同页出现重复素材 ID：' + id);
+        target = check;
+      }
+      if (check.checked) ids.push(rowId);
+    });
+    return { ids: ids, target: target, count: selectedCount(drawer) };
+  }
+
   async function clickMaterialCheckbox(id, shouldCheck, expectedBefore) {
     await dismissKnownPromo();
     assertViewport();
@@ -874,15 +895,42 @@
     if (shouldCheck) assertRowsStillEligible([id]);
     assertViewport();
     if (state.stopRequested) throw new Error(state.stopMessage);
-    ready.item.check.click();
-    var expectedAfter = expectedBefore + (shouldCheck ? 1 : -1);
-    await waitFor(function () {
-      var current;
-      try { current = rowsNow(); } catch (_) { return false; }
-      var latest = current.rows.find(function (row) { return row.id === id; });
-      return latest && latest.check.checked === shouldCheck &&
-        selectedCount(current.drawer) === expectedAfter;
-    }, '素材 ' + id + (shouldCheck ? '勾选' : '取消勾选') + '生效', 5000);
+    var page = pageNumber(ready.bundle.drawer);
+    var expectedIds = ready.bundle.rows.filter(function (row) { return row.check.checked; })
+      .map(function (row) { return row.id; });
+    var drawer = context('creative').drawer;
+    var before = materialSelection(drawer, id);
+    if (pageNumber(drawer) !== page || before.count !== expectedBefore || expectedIds.length !== expectedBefore ||
+        !sameIds(before.ids, expectedIds) || !visible(before.target) || before.target.checked === shouldCheck) {
+      throw new Error('点击前素材页或勾选状态已改变：' + id);
+    }
+    var wanted = shouldCheck ? expectedIds.concat(id) : expectedIds.filter(function (value) { return value !== id; });
+    before.target.click();
+    var observed = '';
+    try {
+      // Selection can settle before all the ROI and sort cells finish updating.
+      await waitFor(function () {
+        assertViewport();
+        if (state.stopRequested) throw new Error(state.stopMessage);
+        var current, currentPage;
+        try {
+          var currentDrawer = context('creative').drawer;
+          currentPage = pageNumber(currentDrawer);
+          current = materialSelection(currentDrawer, id);
+        } catch (error) {
+          observed = error.message;
+          return false;
+        }
+        if (currentPage !== page) throw new Error('等待勾选生效时素材页码发生变化');
+        observed = '工具栏已选 ' + current.count + ' 条，表格已选 ID：' + (current.ids.join(', ') || '-') +
+          '；预期 ID：' + (wanted.join(', ') || '-');
+        return current.target && current.target.checked === shouldCheck &&
+          current.count === wanted.length && sameIds(current.ids, wanted);
+      }, '素材 ' + id + (shouldCheck ? '勾选' : '取消勾选') + '生效', 10000);
+    } catch (error) {
+      if (observed && error.message.startsWith('等待超时：')) error.message += '；最后读到：' + observed;
+      throw error;
+    }
   }
 
   async function selectRows(bundle, chosen, alreadySelected) {
@@ -2683,7 +2731,7 @@
       '</style>',
       '<button class="launcher" id="launch" title="点击展开，拖动可调整位置" aria-label="展开千川追投助手" style="display:', state.open === false ? 'block' : 'none', ';top:', esc(state.launcherTop), '%">追投助手</button>',
       '<div class="panel" style="display:', state.open === false ? 'none' : 'flex', '">',
-      '<div class="head"><strong>千川素材追投助手 v0.4.37</strong><button id="close" title="最小化" aria-label="最小化助手">−</button></div>',
+      '<div class="head"><strong>千川素材追投助手 v0.4.39</strong><button id="close" title="最小化" aria-label="最小化助手">−</button></div>',
       '<div class="body">',
       '<div class="card"><div class="muted">锁定账户 / ', cfg.planKind === 'live' ? '推直播间计划' : '商品自选计划', '</div>',
       '<strong>', esc(cfg.accountName || '尚未锁定'), '</strong><br>',

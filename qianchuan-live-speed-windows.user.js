@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         千川直播定时一键调速助手
 // @namespace    local.qianchuan.live-speed-scheduler
-// @version      1.2.8
+// @version      1.2.9
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js
 // @description  当前直播计划定时调速；提交后容忍后台页面延迟，自动多次核对已建任务，禁止重复提交
@@ -92,9 +92,12 @@
   }
   const initialReport = GM_getValue(LOG_KEY,
     initialRun ? GM_getValue(LEGACY_LOG_KEY, '') : '');
-  const cfg = Object.assign({ budget: '', hours: '', intervalHours: '', dailyCap: '' },
-    GM_getValue(CFG_KEY, GM_getValue('qc-live-speed-scheduler-config-v1', {})));
+  const storedCfg = GM_getValue(CFG_KEY, GM_getValue('qc-live-speed-scheduler-config-v1', {}));
+  const cfg = Object.assign({ budget: '', hours: '', intervalHours: '', dailyCap: '' }, storedCfg);
   if (cfg.intervalHours === '' && Number(cfg.intervalMinutes) > 0) cfg.intervalHours = Number(cfg.intervalMinutes) / 60;
+  for (const [key, value] of Object.entries({ budget: 200, hours: 2, intervalHours: 2, dailyCap: 1600 })) {
+    if (cfg[key] === '') cfg[key] = value;
+  }
   const state = {
     open: false, busy: false, reloading: false, stopAfterSubmit: false, stopRequested: false, phase: '请锁定当前直播计划',
     lock: null, run: initialRun, rows: [], selectedId: '',

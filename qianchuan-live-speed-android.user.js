@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Live Speed Scheduler (Android)
 // @namespace    local.qianchuan.live-speed-scheduler
-// @version      1.2.11
+// @version      1.2.12
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js
 // @description  Android edition based on Windows v1.2.3: scheduled live tasks, automatic verification and local takeover.
@@ -92,9 +92,12 @@
   }
   const initialReport = GM_getValue(LOG_KEY,
     initialRun ? GM_getValue(LEGACY_LOG_KEY, '') : '');
-  const cfg = Object.assign({ budget: '', hours: '', intervalHours: '', dailyCap: '' },
-    GM_getValue(CFG_KEY, GM_getValue('qc-live-speed-scheduler-config-v1', {})));
+  const storedCfg = GM_getValue(CFG_KEY, GM_getValue('qc-live-speed-scheduler-config-v1', {}));
+  const cfg = Object.assign({ budget: '', hours: '', intervalHours: '', dailyCap: '' }, storedCfg);
   if (cfg.intervalHours === '' && Number(cfg.intervalMinutes) > 0) cfg.intervalHours = Number(cfg.intervalMinutes) / 60;
+  for (const [key, value] of Object.entries({ budget: 200, hours: 2, intervalHours: 2, dailyCap: 1600 })) {
+    if (cfg[key] === '') cfg[key] = value;
+  }
   const state = {
     open: false, busy: false, reloading: false, stopAfterSubmit: false, stopRequested: false, phase: '\u8BF7\u9501\u5B9A\u5F53\u524D\u76F4\u64AD\u8BA1\u5212',
     lock: null, run: initialRun, rows: [], selectedId: '',

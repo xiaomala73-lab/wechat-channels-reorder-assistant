@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Material Chase Assistant (Android)
 // @namespace    local.qianchuan.chase
-// @version      0.4.39
+// @version      0.4.40
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js
 // @description  Android old/new material status headers; product/live eligibility, semantic tables and pagination compatibility.
@@ -55,7 +55,7 @@
       bid: 10.5,
       liveGoal: '\u76F4\u64AD\u95F4\u6210\u4EA4',
       liveRoiTarget: '',
-      liveGender: '\u4E0D\u9650',
+      liveGender: '\u5973',
       tailMin: 5
     },
     busy: false,
@@ -361,7 +361,7 @@
         state.config.bid = 10.5;
         state.config.liveGoal = '\u76F4\u64AD\u95F4\u6210\u4EA4';
         state.config.liveRoiTarget = '';
-        state.config.liveGender = '\u4E0D\u9650';
+        state.config.liveGender = '\u5973';
         state.config.tailMin = 5;
       }
       state.currentRun = null;

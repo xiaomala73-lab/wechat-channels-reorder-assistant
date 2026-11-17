@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巨量千川素材追投助手（安全锁定版）
 // @namespace    local.qianchuan.chase
-// @version      0.4.37
+// @version      0.4.38
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js
 // @description  商品日期追投可设最终尾组最低数量；直播日期允许未审核素材；整组复核补选；提交失败限重试一次
@@ -55,7 +55,7 @@
       bid: 10.5,
       liveGoal: '直播间成交',
       liveRoiTarget: '',
-      liveGender: '不限',
+      liveGender: '女',
       tailMin: 5
     },
     busy: false,
@@ -344,7 +344,7 @@
         state.config.bid = 10.5;
         state.config.liveGoal = '直播间成交';
         state.config.liveRoiTarget = '';
-        state.config.liveGender = '不限';
+        state.config.liveGender = '女';
         state.config.tailMin = 5;
       }
       state.currentRun = null;

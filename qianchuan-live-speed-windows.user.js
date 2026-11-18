@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         千川直播定时一键调速助手
 // @namespace    local.qianchuan.live-speed-scheduler
-// @version      1.2.10
+// @version      1.2.11
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js
 // @description  当前直播计划定时调速；提交后容忍后台页面延迟，自动多次核对已建任务，禁止重复提交
@@ -142,6 +142,12 @@
       .map(n => String(n).padStart(2, '0')).join(':');
   }
   function saveRun() {
+    const saved = GM_getValue(RUN_KEY, null);
+    // A duplicated tab can share the same token. A superseded callback must not replace the new run.
+    if (state.run && saved?.owner === state.run.owner && saved.startedAt > state.run.startedAt) {
+      render();
+      return;
+    }
     GM_setValue(RUN_KEY, state.run);
     if (state.run) {
       const key = planRunKey(state.run), current = GM_getValue(key, null);
@@ -982,7 +988,6 @@
     if (state.run && state.run.accountId === lock.accountId && state.run.planId === lock.planId &&
         state.run.takeoverCheckPending) return state.run.takeoverSource;
     if (!activeRun(lease)) return null;
-    if (lease.status === 'submitting') throw new Error('旧轮次正在提交，请等待其结果核对或在原页停止后再接管');
     const key = 'qc-live-speed-scheduler-run-v2-' + lease.owner;
     let source = GM_getValue(key, null);
     if (!source) {
@@ -993,7 +998,6 @@
         source.accountId !== lock.accountId || source.planId !== lock.planId)) {
       throw new Error('旧轮次记录与计划锁不一致，未接管');
     }
-    if (source?.status === 'submitting') throw new Error('旧轮次正在提交，暂不能接管');
     if (source?.takeoverCheckPending) {
       const inherited = source.takeoverSource;
       if (inherited && (inherited.accountId !== lock.accountId || inherited.planId !== lock.planId)) {
@@ -1002,23 +1006,23 @@
       return inherited || { owner: source.owner, startedAt: source.startedAt, status: source.status,
         accountId: source.accountId, planId: source.planId, pending: null };
     }
-    if (lease.status === 'needs_review' && !source?.pending) {
-      throw new Error('旧记录需要核对，但没有完整的待确认任务信息；请先在原标签页处理');
-    }
-    return source ? { owner: source.owner, startedAt: source.startedAt, status: source.status,
+    const status = source?.status || lease.status;
+    const missingPending = !source?.pending && ['submitting', 'needs_review'].includes(status);
+    return source ? { owner: source.owner, startedAt: source.startedAt, status, missingPending,
       accountId: source.accountId, planId: source.planId, day: source.day,
       hours: source.hours, pending: source.pending ? { ...source.pending } : null } :
-      { owner: lease.owner, startedAt: lease.startedAt, status: lease.status,
+      { owner: lease.owner, startedAt: lease.startedAt, status, missingPending, day: lease.day,
         accountId: lock.accountId, planId: lock.planId, pending: null };
   }
   function verifyTakeoverPending(source, scan, today) {
-    if (!source?.pending) return;
+    if (!source?.pending && !source?.missingPending) return;
     const sourceDay = runDay(source);
     if (sourceDay && sourceDay < today) {
       log('旧轮次的待确认记录属于 ' + sourceDay + '，接管按今天的平台任务恢复倒计时');
       return;
     }
     const p = source.pending;
+    if (!p) throw new Error('旧轮次缺少待确认的任务信息，无法从今日列表核实提交结果');
     const hits = scan.items.filter(item => item.name === p.name);
     if (sourceDay !== today || hits.length !== 1 || hits[0].day !== today ||
         hits[0].budgetCents !== p.budgetCents || hits[0].hours !== source.hours ||
@@ -1076,7 +1080,6 @@
       const saved = GM_getValue(RUN_KEY, null);
       const sourceLease = activeRun(lease) ? lease : activeRun(saved) ? saved : state.run;
       const source = localTakeoverSource(lock, sourceLease);
-      if (saved?.status === 'submitting' || state.run?.status === 'submitting') throw new Error('当前标签页正在提交，暂不能接管');
       if (activeRun(saved) && (saved.accountId !== lock.accountId || saved.planId !== lock.planId)) {
         throw new Error('本标签页保存着其他计划的轮次，未接管');
       }
@@ -1103,11 +1106,14 @@
       const currentSource = sourceKey ? GM_getValue(sourceKey, null) : null;
       if (currentSource && currentSource.startedAt === source.startedAt && currentSource.pending &&
           JSON.stringify(currentSource.pending) !== JSON.stringify(source.pending)) {
-        run.takeoverSource = { ...source, day: currentSource.day, hours: currentSource.hours,
+        run.takeoverSource = { ...source, missingPending: false, day: currentSource.day, hours: currentSource.hours,
           pending: { ...currentSource.pending } };
         throw new Error('旧标签页出现新的待确认提交，接管已暂停，请先核对');
       }
       verifyTakeoverPending(source, scan, run.day);
+      if (source?.pending && runDay(source) === run.day) {
+        log('千川已确认旧轮次的提交，按今日任务恢复定时');
+      }
       scheduleTakeover(run, scan);
       if (sourceKey && source.owner !== tabToken && currentSource &&
           currentSource.startedAt === source.startedAt && currentSource.accountId === lock.accountId && currentSource.planId === lock.planId) {
@@ -1243,7 +1249,7 @@
     const countdown = displayNext ? durationText(displayNext - Date.now()) : '—';
     const remainingCents = run ? Math.max(0, run.capCents - (run.lastTodayCents || 0)) : null;
     shadow.innerHTML = css + `<button id="launch" class="launcher" title="点击展开，拖动调整位置" style="display:${state.open ? 'none' : 'block'};top:${esc(state.launcherTop)}%">调速助手</button>
-      <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>千川直播定时调速助手</strong><small>v1.2.10 · 后台恢复自动核对 · 支持本机接管 · 当前直播计划 · 默认静默最小化</small></div><button id="minimize" title="最小化">−</button></div><div class="body">
+      <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>千川直播定时调速助手</strong><small>v1.2.11 · 后台恢复自动核对 · 支持本机接管 · 当前直播计划 · 默认静默最小化</small></div><button id="minimize" title="最小化">−</button></div><div class="body">
       <div class="card"><div class="eyebrow">锁定当前直播计划</div><div class="title">${esc(lock?.planName || '尚未锁定')}</div><div class="muted">账户 ${esc(lock?.accountId || '—')} · 计划 ${esc(lock?.planId || '—')}</div>${!urlContextSafeDetail() ? `<label class="field">当前页在投计划<select id="plan-choice" ${state.busy || active ? 'disabled' : ''}><option value="">请选择计划</option>${lockedOptions}</select></label>` : '<div class="hint">当前位于直播计划详情页，可直接锁定该计划。</div>'}<div class="row"><button class="btn" id="lock" ${state.busy || active ? 'disabled' : ''}>锁定当前计划</button></div></div>
       <div class="card"><div class="eyebrow">一键调速参数</div><div class="hint">调控工具：一键调速 · 调控方式：一键起量 · 起量探索目标：直播间购买</div><div class="grid"><label class="field">单次调控总预算（元）<input id="budget" type="number" min="0.01" step="0.01" value="${esc(cfg.budget)}" ${state.busy || active ? 'disabled' : ''}></label><label class="field">调控时长（小时）<input id="hours" type="number" min="0.5" max="24" step="0.5" value="${esc(cfg.hours)}" ${state.busy || active ? 'disabled' : ''}></label><label class="field">续投间隔（小时）<input id="interval" type="number" min="0.5" max="24" step="0.5" value="${esc(cfg.intervalHours)}" ${state.busy || active ? 'disabled' : ''}></label><label class="field">该计划当日上限（元）<input id="cap" type="number" min="0.01" step="0.01" value="${esc(cfg.dailyCap)}" ${state.busy || active ? 'disabled' : ''}></label></div><div class="hint">上限计入当前计划今天调控列表中的全部一键调速任务，包括人工创建的任务。下一次提交会超出上限时结束本轮。</div></div>
       <div class="card"><div class="eyebrow">执行</div><div class="hint warn">每天首次启动直接按设定预算和时长创建，首轮计入当日上限。提交后核对新任务和今日预算，再按设定间隔续投。当天再次启动时先核对任务。</div><div class="row"><button class="btn primary" id="start" ${state.busy || active ? 'disabled' : ''}>启动定时调速</button><button class="btn stop" id="stop" ${run && (['scheduled', 'submitting'].includes(run.status) || (state.busy && run.takeoverCheckPending)) ? '' : 'disabled'}>停止</button></div><div class="row"><button class="btn" id="takeover" ${state.busy || state.reloading || !state.lock ? 'disabled' : ''}>本机接管并核对今日任务</button></div><div class="hint">按千川今日最新的一键起量任务恢复倒计时。接管本浏览器中同一计划的定时，其他电脑的脚本独立运行。</div>${run && run.status === 'needs_review' && !run.takeoverCheckPending ? '<div class="row"><button class="btn" id="reconcile">核对已提交任务并恢复定时（不重提）</button></div>' : ''}</div>

@@ -6,7 +6,7 @@
 
 | 千川助手 | Windows | 安卓 |
 | --- | --- | --- |
-| 直播定时调速 | [v1.2.10](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js) | [v1.2.14](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js) |
+| 直播定时调速 | [v1.2.11](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js) | [v1.2.15](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js) |
 | 调控 | [v0.1.17](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js) | [v0.1.22](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js) |
 | 素材追投 | [v0.4.40](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js) | [v0.4.42](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js) |
 | 零消耗素材清理 | [v1.1.8](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-windows.user.js) | [v1.1.10](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-android.user.js) |
@@ -19,6 +19,8 @@
 安装或覆盖更新后，保持 Tampermonkey 的「检查更新」开启。后续版本会使用表中的同一个地址。浏览器本地保存的清单和参数需要在各设备分别设置。
 
 素材追投助手默认将直播计划的性别定向设为「女」。直播定时调速助手默认单次预算 200 元、调控时长 2 小时、续投间隔 2 小时、计划当日上限 1600 元；旧配置中的非空自定义值继续保留。
+
+直播定时调速的「本机接管并核对今日任务」会核对千川列表中的待确认提交。旧标签页仍显示「正在提交」时，若今日列表中找到唯一匹配的任务，可按平台任务的创建时间恢复倒计时。
 
 安卓四个千川助手的面板和侧边入口会抵消网页双指缩放；横屏和竖屏各自保留拖动位置。窄屏或键盘弹出时，面板会收窄或缩短以留在可见区域。
 

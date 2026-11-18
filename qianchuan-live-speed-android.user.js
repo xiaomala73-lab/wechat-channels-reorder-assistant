@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Live Speed Scheduler (Android)
 // @namespace    local.qianchuan.live-speed-scheduler
-// @version      1.2.14
+// @version      1.2.15
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js
 // @description  Android edition based on Windows v1.2.3: scheduled live tasks, automatic verification and local takeover.
@@ -163,6 +163,12 @@
       .map(n => String(n).padStart(2, '0')).join(':');
   }
   function saveRun() {
+    const saved = GM_getValue(RUN_KEY, null);
+    // A duplicated tab can share the same token. A superseded callback must not replace the new run.
+    if (state.run && saved?.owner === state.run.owner && saved.startedAt > state.run.startedAt) {
+      render();
+      return;
+    }
     GM_setValue(RUN_KEY, state.run);
     if (state.run) {
       const key = planRunKey(state.run), current = GM_getValue(key, null);
@@ -1021,7 +1027,6 @@
     if (state.run && state.run.accountId === lock.accountId && state.run.planId === lock.planId &&
         state.run.takeoverCheckPending) return state.run.takeoverSource;
     if (!activeRun(lease)) return null;
-    if (lease.status === 'submitting') throw new Error('\u65E7\u8F6E\u6B21\u6B63\u5728\u63D0\u4EA4\uFF0C\u8BF7\u7B49\u5F85\u5176\u7ED3\u679C\u6838\u5BF9\u6216\u5728\u539F\u9875\u505C\u6B62\u540E\u518D\u63A5\u7BA1');
     const key = 'qc-live-speed-scheduler-run-v2-' + lease.owner;
     let source = GM_getValue(key, null);
     if (!source) {
@@ -1032,7 +1037,6 @@
         source.accountId !== lock.accountId || source.planId !== lock.planId)) {
       throw new Error('\u65E7\u8F6E\u6B21\u8BB0\u5F55\u4E0E\u8BA1\u5212\u9501\u4E0D\u4E00\u81F4\uFF0C\u672A\u63A5\u7BA1');
     }
-    if (source?.status === 'submitting') throw new Error('\u65E7\u8F6E\u6B21\u6B63\u5728\u63D0\u4EA4\uFF0C\u6682\u4E0D\u80FD\u63A5\u7BA1');
     if (source?.takeoverCheckPending) {
       const inherited = source.takeoverSource;
       if (inherited && (inherited.accountId !== lock.accountId || inherited.planId !== lock.planId)) {
@@ -1041,23 +1045,23 @@
       return inherited || { owner: source.owner, startedAt: source.startedAt, status: source.status,
         accountId: source.accountId, planId: source.planId, pending: null };
     }
-    if (lease.status === 'needs_review' && !source?.pending) {
-      throw new Error('\u65E7\u8BB0\u5F55\u9700\u8981\u6838\u5BF9\uFF0C\u4F46\u6CA1\u6709\u5B8C\u6574\u7684\u5F85\u786E\u8BA4\u4EFB\u52A1\u4FE1\u606F\uFF1B\u8BF7\u5148\u5728\u539F\u6807\u7B7E\u9875\u5904\u7406');
-    }
-    return source ? { owner: source.owner, startedAt: source.startedAt, status: source.status,
+    const status = source?.status || lease.status;
+    const missingPending = !source?.pending && ['submitting', 'needs_review'].includes(status);
+    return source ? { owner: source.owner, startedAt: source.startedAt, status, missingPending,
       accountId: source.accountId, planId: source.planId, day: source.day,
       hours: source.hours, pending: source.pending ? { ...source.pending } : null } :
-      { owner: lease.owner, startedAt: lease.startedAt, status: lease.status,
+      { owner: lease.owner, startedAt: lease.startedAt, status, missingPending, day: lease.day,
         accountId: lock.accountId, planId: lock.planId, pending: null };
   }
   function verifyTakeoverPending(source, scan, today) {
-    if (!source?.pending) return;
+    if (!source?.pending && !source?.missingPending) return;
     const sourceDay = runDay(source);
     if (sourceDay && sourceDay < today) {
       log('\u65E7\u8F6E\u6B21\u7684\u5F85\u786E\u8BA4\u8BB0\u5F55\u5C5E\u4E8E ' + sourceDay + '\uFF0C\u63A5\u7BA1\u6309\u4ECA\u5929\u7684\u5E73\u53F0\u4EFB\u52A1\u6062\u590D\u5012\u8BA1\u65F6');
       return;
     }
     const p = source.pending;
+    if (!p) throw new Error('旧轮次缺少待确认的任务信息，无法从今日列表核实提交结果');
     const hits = scan.items.filter(item => item.name === p.name);
     if (sourceDay !== today || hits.length !== 1 || hits[0].day !== today ||
         hits[0].budgetCents !== p.budgetCents || hits[0].hours !== source.hours ||
@@ -1115,7 +1119,6 @@
       const saved = GM_getValue(RUN_KEY, null);
       const sourceLease = activeRun(lease) ? lease : activeRun(saved) ? saved : state.run;
       const source = localTakeoverSource(lock, sourceLease);
-      if (saved?.status === 'submitting' || state.run?.status === 'submitting') throw new Error('\u5F53\u524D\u6807\u7B7E\u9875\u6B63\u5728\u63D0\u4EA4\uFF0C\u6682\u4E0D\u80FD\u63A5\u7BA1');
       if (activeRun(saved) && (saved.accountId !== lock.accountId || saved.planId !== lock.planId)) {
         throw new Error('\u672C\u6807\u7B7E\u9875\u4FDD\u5B58\u7740\u5176\u4ED6\u8BA1\u5212\u7684\u8F6E\u6B21\uFF0C\u672A\u63A5\u7BA1');
       }
@@ -1142,11 +1145,14 @@
       const currentSource = sourceKey ? GM_getValue(sourceKey, null) : null;
       if (currentSource && currentSource.startedAt === source.startedAt && currentSource.pending &&
           JSON.stringify(currentSource.pending) !== JSON.stringify(source.pending)) {
-        run.takeoverSource = { ...source, day: currentSource.day, hours: currentSource.hours,
+        run.takeoverSource = { ...source, missingPending: false, day: currentSource.day, hours: currentSource.hours,
           pending: { ...currentSource.pending } };
         throw new Error('\u65E7\u6807\u7B7E\u9875\u51FA\u73B0\u65B0\u7684\u5F85\u786E\u8BA4\u63D0\u4EA4\uFF0C\u63A5\u7BA1\u5DF2\u6682\u505C\uFF0C\u8BF7\u5148\u6838\u5BF9');
       }
       verifyTakeoverPending(source, scan, run.day);
+      if (source?.pending && runDay(source) === run.day) {
+        log('千川已确认旧轮次的提交，按今日任务恢复定时');
+      }
       scheduleTakeover(run, scan);
       if (sourceKey && source.owner !== tabToken && currentSource &&
           currentSource.startedAt === source.startedAt && currentSource.accountId === lock.accountId && currentSource.planId === lock.planId) {
@@ -1448,14 +1454,12 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
     const countdown = displayNext ? durationText(displayNext - Date.now()) : '\u2014';
     const remainingCents = run ? Math.max(0, run.capCents - (run.lastTodayCents || 0)) : null;
     shadow.innerHTML = css + `<button id="launch" class="launcher" title="\u70B9\u51FB\u5C55\u5F00\uFF0C\u62D6\u52A8\u8C03\u6574\u4F4D\u7F6E" style="display:${state.open ? 'none' : 'block'};top:${esc(state.launcherTop)}%">\u8C03\u901F\u52A9\u624B</button>
-      <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>\u5343\u5DDD\u76F4\u64AD\u5B9A\u65F6\u8C03\u901F\u52A9\u624B</strong><small>v1.2.14 \u5B89\u5353\u7248 \u00B7 \u540E\u53F0\u5EF6\u8FDF\u81EA\u52A8\u6838\u5BF9 \u00B7 \u652F\u6301\u672C\u673A\u63A5\u7BA1 \u00B7 \u5F53\u524D\u76F4\u64AD\u8BA1\u5212 \u00B7 \u9ED8\u8BA4\u9759\u9ED8\u6700\u5C0F\u5316</small></div><button id="minimize" title="\u6700\u5C0F\u5316">\u2212</button></div><div class="body">
+      <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>\u5343\u5DDD\u76F4\u64AD\u5B9A\u65F6\u8C03\u901F\u52A9\u624B</strong><small>v1.2.15 \u5B89\u5353\u7248 \u00B7 \u540E\u53F0\u5EF6\u8FDF\u81EA\u52A8\u6838\u5BF9 \u00B7 \u652F\u6301\u672C\u673A\u63A5\u7BA1 \u00B7 \u5F53\u524D\u76F4\u64AD\u8BA1\u5212 \u00B7 \u9ED8\u8BA4\u9759\u9ED8\u6700\u5C0F\u5316</small></div><button id="minimize" title="\u6700\u5C0F\u5316">\u2212</button></div><div class="body">
       <div class="card"><div class="eyebrow">\u9501\u5B9A\u5F53\u524D\u76F4\u64AD\u8BA1\u5212</div><div class="title">${esc(lock?.planName || '\u5C1A\u672A\u9501\u5B9A')}</div><div class="muted">\u8D26\u6237 ${esc(lock?.accountId || '\u2014')} \u00B7 \u8BA1\u5212 ${esc(lock?.planId || '\u2014')}</div>${!urlContextSafeDetail() ? `<label class="field">\u5F53\u524D\u9875\u5728\u6295\u8BA1\u5212<select id="plan-choice" ${state.busy || active ? 'disabled' : ''}><option value="">\u8BF7\u9009\u62E9\u8BA1\u5212</option>${lockedOptions}</select></label>` : '<div class="hint">\u5F53\u524D\u4F4D\u4E8E\u76F4\u64AD\u8BA1\u5212\u8BE6\u60C5\u9875\uFF0C\u53EF\u76F4\u63A5\u9501\u5B9A\u8BE5\u8BA1\u5212\u3002</div>'}<div class="row"><button class="btn" id="lock" ${state.busy || active ? 'disabled' : ''}>\u9501\u5B9A\u5F53\u524D\u8BA1\u5212</button></div></div>
       <div class="card"><div class="eyebrow">\u4E00\u952E\u8C03\u901F\u53C2\u6570</div><div class="hint">\u8C03\u63A7\u5DE5\u5177\uFF1A\u4E00\u952E\u8C03\u901F \u00B7 \u8C03\u63A7\u65B9\u5F0F\uFF1A\u4E00\u952E\u8D77\u91CF \u00B7 \u8D77\u91CF\u63A2\u7D22\u76EE\u6807\uFF1A\u76F4\u64AD\u95F4\u8D2D\u4E70</div><div class="grid"><label class="field">\u5355\u6B21\u8C03\u63A7\u603B\u9884\u7B97\uFF08\u5143\uFF09<input id="budget" type="number" min="0.01" step="0.01" value="${esc(cfg.budget)}" ${state.busy || active ? 'disabled' : ''}></label><label class="field">\u8C03\u63A7\u65F6\u957F\uFF08\u5C0F\u65F6\uFF09<input id="hours" type="number" min="0.5" max="24" step="0.5" value="${esc(cfg.hours)}" ${state.busy || active ? 'disabled' : ''}></label><label class="field">\u7EED\u6295\u95F4\u9694\uFF08\u5C0F\u65F6\uFF09<input id="interval" type="number" min="0.5" max="24" step="0.5" value="${esc(cfg.intervalHours)}" ${state.busy || active ? 'disabled' : ''}></label><label class="field">\u8BE5\u8BA1\u5212\u5F53\u65E5\u4E0A\u9650\uFF08\u5143\uFF09<input id="cap" type="number" min="0.01" step="0.01" value="${esc(cfg.dailyCap)}" ${state.busy || active ? 'disabled' : ''}></label></div><div class="hint">\u4E0A\u9650\u8BA1\u5165\u5F53\u524D\u8BA1\u5212\u4ECA\u5929\u8C03\u63A7\u5217\u8868\u4E2D\u7684\u5168\u90E8\u4E00\u952E\u8C03\u901F\u4EFB\u52A1\uFF0C\u5305\u62EC\u4EBA\u5DE5\u521B\u5EFA\u7684\u4EFB\u52A1\u3002\u4E0B\u4E00\u6B21\u63D0\u4EA4\u4F1A\u8D85\u51FA\u4E0A\u9650\u65F6\u7ED3\u675F\u672C\u8F6E\u3002</div></div>
       <div class="card"><div class="eyebrow">\u6267\u884C</div><div class="hint warn">\u6BCF\u5929\u9996\u6B21\u542F\u52A8\u76F4\u63A5\u6309\u8BBE\u5B9A\u9884\u7B97\u548C\u65F6\u957F\u521B\u5EFA\uFF0C\u9996\u8F6E\u8BA1\u5165\u5F53\u65E5\u4E0A\u9650\u3002\u63D0\u4EA4\u540E\u6838\u5BF9\u65B0\u4EFB\u52A1\u548C\u4ECA\u65E5\u9884\u7B97\uFF0C\u518D\u6309\u8BBE\u5B9A\u95F4\u9694\u7EED\u6295\u3002\u5F53\u5929\u518D\u6B21\u542F\u52A8\u65F6\u5148\u6838\u5BF9\u4EFB\u52A1\u3002</div><div class="row"><button class="btn primary" id="start" ${state.busy || active ? 'disabled' : ''}>\u542F\u52A8\u5B9A\u65F6\u8C03\u901F</button><button class="btn stop" id="stop" ${run && (['scheduled', 'submitting'].includes(run.status) || (state.busy && run.takeoverCheckPending)) ? '' : 'disabled'}>\u505C\u6B62</button></div><div class="row"><button class="btn" id="takeover" ${state.busy || state.reloading || !state.lock ? 'disabled' : ''}>\u672C\u673A\u63A5\u7BA1\u5E76\u6838\u5BF9\u4ECA\u65E5\u4EFB\u52A1</button></div><div class="hint">\u6309\u5343\u5DDD\u4ECA\u65E5\u6700\u65B0\u7684\u4E00\u952E\u8D77\u91CF\u4EFB\u52A1\u6062\u590D\u5012\u8BA1\u65F6\u3002\u63A5\u7BA1\u672C\u6D4F\u89C8\u5668\u4E2D\u540C\u4E00\u8BA1\u5212\u7684\u5B9A\u65F6\uFF0C\u5176\u4ED6\u7535\u8111\u7684\u811A\u672C\u72EC\u7ACB\u8FD0\u884C\u3002</div>${run && run.status === 'needs_review' && !run.takeoverCheckPending ? '<div class="row"><button class="btn" id="reconcile">\u6838\u5BF9\u5DF2\u63D0\u4EA4\u4EFB\u52A1\u5E76\u6062\u590D\u5B9A\u65F6\uFF08\u4E0D\u91CD\u63D0\uFF09</button></div>' : ''}</div>
       <div class="card"><div class="eyebrow">\u6267\u884C\u72B6\u6001</div><div class="status">${esc(state.phase)}</div><div class="metrics"><div class="metric"><span>\u8DDD\u79BB\u4E0B\u4E00\u8F6E</span><strong id="countdown" class="accent">${esc(countdown)}</strong></div><div class="metric"><span>\u5355\u6B21\u8C03\u63A7\u9884\u7B97</span><strong>${run ? yuan(run.budgetCents) + ' \u5143' : cfg.budget ? esc(cfg.budget) + ' \u5143' : '\u2014'}</strong></div><div class="metric"><span>\u8C03\u63A7\u65F6\u957F</span><strong>${run ? run.hours + ' \u5C0F\u65F6' : cfg.hours ? esc(cfg.hours) + ' \u5C0F\u65F6' : '\u2014'}</strong></div><div class="metric"><span>\u4ECA\u65E5\u5269\u4F59\u989D\u5EA6</span><strong>${remainingCents === null ? '\u2014' : yuan(remainingCents) + ' \u5143'}</strong></div></div><div class="hint">${run ? '\u72B6\u6001\uFF1A' + esc(run.status) + ' \u00B7 \u672C\u8F6E\u786E\u8BA4 ' + (run.confirmed || []).length + ' \u6B21 \u00B7 \u4ECA\u65E5\u5DF2\u5B89\u6392 ' + yuan(run.lastTodayCents || 0) + ' \u5143' : '\u5C1A\u672A\u542F\u52A8'}<br>\u4E0B\u4E00\u8F6E\u9884\u8BA1\uFF1A${esc(next)}${run?.lastScanAt ? ' \u00B7 \u9884\u7B97\u6838\u5BF9\u4E8E ' + esc(timeText(run.lastScanAt)) : ''}</div></div>
       <div class="card"><div class="eyebrow">\u6267\u884C\u8BB0\u5F55</div><div class="log">${esc((run?.logs || state.logs).slice(-35).join('\n') || '\u5C1A\u65E0\u8BB0\u5F55')}</div></div><div class="card"><div class="eyebrow">\u7ED3\u679C\u62A5\u544A</div><div class="report">${esc(state.report || '\u6267\u884C\u540E\u751F\u6210\u62A5\u544A')}</div><div class="row"><button class="btn" id="copy">\u590D\u5236\u62A5\u544A</button></div></div></div></div>`;
-        const versionLabel = shadow.querySelector('.head small');
-        if (versionLabel) versionLabel.textContent = 'v1.2.13 安卓版 · 后台恢复自动核对 · 支持本机接管 · 当前直播计划 · 默认静默最小化';
         launcherPlacement.bind(shadow.getElementById('launch'), () => { state.open = true; render(); });
     shadow.getElementById('minimize').onclick = () => { state.open = false; render(); };
     shadow.getElementById('lock').onclick = chooseLock;

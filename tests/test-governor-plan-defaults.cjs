@@ -10,19 +10,36 @@ const liveBudget={
  '1832698106712151':{roi:'2.3',gap:'99',add:'300'},
  '1837421927864619':{roi:'1.5',gap:'99',add:'300'}
 };
-function load(platform,saved={},lock=null){
+function load(platform,saved={},lock=null,renderPanel=false){
  const source=fs.readFileSync(`qianchuan-task-governor-${platform}.user.js`,'utf8');
  const store=new Map([['qc-task-governor-config-v1',saved],['qc-task-governor-lock-v1-test',lock]]);
- const context={console,sessionStorage:{getItem:()=> 'test'},GM_getValue:(k,f)=>store.has(k)?structuredClone(store.get(k)):f,
+ const elements = new Map();
+ let html = '';
+ const panel = {
+  get innerHTML() {return html;},
+  set innerHTML(value) {html = value; elements.clear();},
+  querySelector() {return null;},
+  getElementById(id) {
+   if (!html.includes('id="' + id + '"')) return null;
+   if (!elements.has(id)) elements.set(id, {});
+   return elements.get(id);
+  }
+ };
+ const context={panel,console,sessionStorage:{getItem:()=> 'test'},GM_getValue:(k,f)=>store.has(k)?structuredClone(store.get(k)):f,
  GM_setValue:(k,v)=>store.set(k,structuredClone(v)),source};
  vm.createContext(context);
- vm.runInContext(source.slice(source.indexOf('    const CFG_KEY'),source.indexOf("    host.style.cssText = 'position:fixed;z-index"))+`
- const shadow={getElementById:()=>null};
- function render(){};
- globalThis.api={cfg,state,lockCurrent,settings,PLAN_ROI_DEFAULTS,PLAN_LIVE_BUDGET_DEFAULTS,
+ const renderStart = source.indexOf('    function render()');
+ const renderEnd = source.indexOf('\n    render();\n    window.addEventListener',renderStart);
+ const panelCode = renderPanel ? source.slice(renderStart,renderEnd) : 'function render(){}';
+ vm.runInContext(source.slice(source.indexOf('    const CFG_KEY'),source.indexOf("    host.style.cssText = 'position:fixed;z-index"))+panelCode+`
+ const shadow=${renderPanel ? 'panel' : '{getElementById:()=>null}'};
+ const launcherPlacement={bind(){}};
+ const css='';
+ urlInfo=()=>state.lock;
+ globalThis.api={cfg,state,lockCurrent,settings,render,PLAN_ROI_DEFAULTS,PLAN_LIVE_BUDGET_DEFAULTS,
  lock(kind,planId,accountId='123'){detailIdentity=()=>({kind,planId,accountId,planName:'test'});lockCurrent();},
  select(action){changeAction(action);}};`,context);
- return {api:context.api,store,source};
+ return {api:context.api,store,source,panel};
 }
 for(const platform of ['windows','android']){
  test(`${platform}: exact preset maps and version/update metadata`,()=>{
@@ -30,7 +47,7 @@ for(const platform of ['windows','android']){
    assert.deepEqual(JSON.parse(JSON.stringify(api.PLAN_ROI_DEFAULTS)),{product:products,live:lives});
    assert.deepEqual(JSON.parse(JSON.stringify(api.PLAN_LIVE_BUDGET_DEFAULTS)),liveBudget);
   for(const id of [...Object.keys(products),...Object.keys(lives)])assert.match(id,/^\d{16}$/);
-  const version=platform==='windows'?'0.1.16':'0.1.21';
+  const version=platform==='windows'?'0.1.17':'0.1.22';
   assert.match(source,new RegExp('@version\\s+'+version.replaceAll('.','\\.')));
   for(const key of ['updateURL','downloadURL']) {
    const line=source.split('\n').find(line=>line.startsWith('// @'+key+' '));
@@ -98,6 +115,28 @@ for(const platform of ['windows','android']){
   const {api}=load(platform,{action:'product-delete',productRoi:'99',liveDeleteRoi:'99'},
    {kind:'product',planId:'9999999999999999',accountId:'123',planName:'test'});
   assert.equal(api.cfg.productRoi,'');
+ });
+ test(`${platform}: the separate keep-zero button selects the right mode for each plan`,()=>{
+  for (const [kind,id,roiKey,field] of [
+   ['live','1832698106712151','liveDeleteRoi','live-delete-roi'],
+   ['product','1852467269069907','productRoi','product-roi']
+  ]) {
+   const {api,panel}=load(platform,{action:'live-delete'},null,true);
+   api.lock(kind,id);
+   assert.match(panel.innerHTML,new RegExp('option value="'+kind+'-delete"'));
+   assert.match(panel.innerHTML,/id="keep-zero-delete" aria-pressed="false"/);
+   api.cfg[roiKey]='1.81';
+   api.state.preview={targets:[]};
+   panel.getElementById('keep-zero-delete').onclick();
+   assert.equal(api.cfg.action,kind+'-delete-keep-zero');
+   assert.equal(api.cfg[roiKey],'1.81');
+   assert.equal(api.state.preview,null);
+   assert.match(panel.innerHTML,/id="keep-zero-delete" aria-pressed="true"/);
+   assert.match(panel.innerHTML,new RegExp('id="'+field+'"'));
+   panel.getElementById('action').onchange({target:{value:kind+'-delete'}});
+   assert.equal(api.cfg.action,kind+'-delete');
+   assert.match(panel.innerHTML,/id="keep-zero-delete" aria-pressed="false"/);
+  }
  });
  test(`${platform}: choosing action invalidates preview and saves preset`,()=>{
   const h=load(platform);h.api.lock('live','1832698106712151');h.api.state.preview={targets:[1]};

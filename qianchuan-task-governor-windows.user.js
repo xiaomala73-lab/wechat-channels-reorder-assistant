@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         千川调控助手
 // @namespace    local.qianchuan.task-governor
-// @version      0.1.16
+// @version      0.1.17
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js
 // @description  直播高ROI任务追加预算，支持因任务预算不足暂停的任务；低ROI删除；先检查本页再执行
@@ -166,6 +166,12 @@
       '1832698106712151': Object.freeze({ roi: '2.3', gap: '99', add: '300' }),
       '1837421927864619': Object.freeze({ roi: '1.5', gap: '99', add: '300' })
     });
+    function isLiveDelete(action) {
+      return action === 'live-delete' || action === 'live-delete-keep-zero';
+    }
+    function isProductDelete(action) {
+      return action === 'product-delete' || action === 'product-delete-keep-zero';
+    }
     function defaultsScope(lock) { return [lock.accountId, lock.kind, lock.planId].join(':'); }
     function applyLiveBudgetDefaults(lock) {
       const defaults = lock?.kind === 'live' ? PLAN_LIVE_BUDGET_DEFAULTS[lock.planId] : null;
@@ -178,15 +184,16 @@
       cfg.liveDeleteRoi = lock.kind === 'live' ? PLAN_ROI_DEFAULTS.live[lock.planId] || '' : '';
       applyLiveBudgetDefaults(lock);
       if (lock.kind === 'product') cfg.action = 'product-delete';
-      else if (!['live-delete', 'live-budget'].includes(cfg.action)) cfg.action = '';
+      else if (!isLiveDelete(cfg.action) && cfg.action !== 'live-budget') cfg.action = '';
       cfg.planDefaultsScope = defaultsScope(lock);
       state.preview = null;
       GM_setValue(CFG_KEY, cfg);
     }
     function changeAction(action) {
       if (state.busy) return;
+      const preserveLiveRoi = isLiveDelete(cfg.action) && isLiveDelete(action) && action !== cfg.action;
       cfg.action = action;
-      if (action === 'live-delete' && state.lock?.kind === 'live') {
+      if (isLiveDelete(action) && state.lock?.kind === 'live' && !preserveLiveRoi) {
         cfg.liveDeleteRoi = PLAN_ROI_DEFAULTS.live[state.lock.planId] || '';
       }
       if (action === 'live-budget' && state.lock?.kind === 'live') applyLiveBudgetDefaults(state.lock);
@@ -222,9 +229,9 @@
     function actionKind() {
       const a = cfg.action;
       const d = assertLock();
-      if (a === 'live-delete' || a === 'live-budget') {
+      if (isLiveDelete(a) || a === 'live-budget') {
         if (d.kind !== 'live') throw new Error('当前不是推直播计划');
-      } else if (a === 'product-delete') {
+      } else if (isProductDelete(a)) {
         if (d.kind !== 'product') throw new Error('当前不是推商品计划');
       } else throw new Error('请先选择操作');
       return a;
@@ -339,8 +346,8 @@
     function settings() {
       readCfg();
       const action = actionKind();
-      if (action === 'live-delete') return { action, roi: number(cfg.liveDeleteRoi, '直播删除 ROI 阈值') };
-      if (action === 'product-delete') {
+      if (isLiveDelete(action)) return { action, roi: number(cfg.liveDeleteRoi, '直播删除 ROI 阈值') };
+      if (isProductDelete(action)) {
         const roi = number(cfg.productRoi, '调控 ROI 阈值');
         return { action, marketingRoi: roi, paymentRoi: roi };
       }
@@ -348,7 +355,7 @@
         gap: cents(cfg.gap, '预算与消耗差值'), add: cents(cfg.add, '每次追加金额', true) };
     }
     function eligible(item, params) {
-      if (params.action === 'product-delete') {
+      if (isProductDelete(params.action)) {
         if (!Number.isSafeInteger(item.comprehensiveCost) || item.comprehensiveCost <= 0 ||
             !Number.isSafeInteger(item.spend) || item.spend <= 0) return false;
         return item.marketingRoiDash || item.paymentRoiDash ||
@@ -356,8 +363,11 @@
           (Number.isFinite(item.paymentRoi) && item.paymentRoi < params.paymentRoi);
       }
       if (!Number.isFinite(item.roi)) return false;
-      if (params.action === 'live-delete') return Number.isSafeInteger(item.spend) && item.spend > 0 &&
-        /调控中/.test(item.status) && item.roi < params.roi;
+      if (isLiveDelete(params.action)) {
+        const hasSpend = Number.isSafeInteger(item.spend) && item.spend > 0;
+        return /调控中/.test(item.status) && item.roi < params.roi &&
+          (params.action === 'live-delete' || hasSpend);
+      }
       if (params.action !== 'live-budget') return false;
       if (!(item.roi >= params.roi) || !Number.isSafeInteger(item.budget) || item.budget < 0 ||
           !Number.isSafeInteger(item.spend) || item.spend < 0) return false;
@@ -406,7 +416,7 @@
           at: Date.now() };
         phase('本页 ' + items.length + ' 条任务，符合条件 ' + targets.length + ' 条；请核对下方清单');
         log('检查第 ' + table.page + ' 页：' + targets.length + ' 条符合“' + params.action + '”条件；ROI 列：' + table.roiLabels.join('、') +
-          (params.action === 'product-delete' ? '；综合成本和消耗均大于 0，任一 ROI 为“—”或低于阈值：综合营销 ' + params.marketingRoi + '、支付 ' + params.paymentRoi : ''));
+          (isProductDelete(params.action) ? '；综合成本和消耗均大于 0，任一 ROI 为“—”或低于阈值：综合营销 ' + params.marketingRoi + '、支付 ' + params.paymentRoi : ''));
         report('已生成本页预览；尚未修改千川任务');
       } catch (error) { phase('检查失败：' + error.message); report(error.message); }
       finally { state.busy = false; render(); }
@@ -481,7 +491,7 @@
       if (state.stop) throw new Error('用户已停止，未提交');
       const table = taskTable(), record = checkpoint();
       // The selected-task toolbar can hide the original filters during live batch deletion.
-      const map = checkpointRows(p, table, p.params.action !== 'live-delete');
+      const map = checkpointRows(p, table, !isLiveDelete(p.params.action));
       if (!record || record.pending) throw new Error('上次提交未核实，未执行新操作');
       for (const id of ids) {
         const expected = p.targets.find(x => x.id === id), fresh = map.get(id);
@@ -523,8 +533,12 @@
       finishAction(ids);
     }
     async function resumePreview(record) {
-      const p = record.preview;
-      if (JSON.stringify(settings()) !== JSON.stringify(p.params)) throw new Error('请恢复本轮原筛选条件再续跑');
+      const original = record.preview;
+      if (JSON.stringify(settings()) !== JSON.stringify(original.params)) throw new Error('请恢复本轮原筛选条件再续跑');
+      // Legacy live deletion checkpoints excluded zero or unknown spend.
+      const p = !record.deleteModeVersion && original.params.action === 'live-delete'
+        ? {...original, params: {...original.params, action: 'live-delete-keep-zero'}}
+        : original;
       const {drawer} = assertLock();
       if (Array.from(document.querySelectorAll('.main-vmok-plugin-modal,[role="dialog"],[class*="popover"][class*="content"]'))
         .some(el => visible(el) && !el.contains(drawer) &&
@@ -741,13 +755,13 @@
         if (!resume && existing) throw new Error('本轮尚未结束，请使用「继续本轮」');
         const preflight = resume ? null : currentPreview();
         const p = resume ? await resumePreview(existing) : {...preflight.p, scope: taskScope(preflight.t)};
-        if (!resume) saveCheckpoint({preview: {...p, targets: []}, remaining: p.targets, pending: null});
+        if (!resume) saveCheckpoint({preview: {...p, targets: []}, remaining: p.targets, pending: null, deleteModeVersion: 2});
         action = p.params.action;
         phase('正在执行第 ' + p.page + ' 页，共 ' + p.targets.length + ' 条');
         log('开始执行 ' + action + '，任务 ID：' + p.targets.map(x => x.id).join(', '));
         if (p.targets.length) {
-          if (action === 'live-delete') await deleteLive(p);
-          else if (action === 'product-delete') await deleteProduct(p);
+          if (isLiveDelete(action)) await deleteLive(p);
+          else if (isProductDelete(action)) await deleteProduct(p);
           else await addBudget(p);
         }
         saveCheckpoint(null);
@@ -783,33 +797,45 @@
       const live = kind === 'live';
       const choices = live ? `<option value="live-delete">直播低 ROI 批量删除</option><option value="live-budget">直播高 ROI 追加预算</option>` :
         `<option value="product-delete">商品低 ROI 批量删除（逐条执行）</option>`;
-      const action = cfg.action && ((live && cfg.action.startsWith('live-')) || (!live && cfg.action === 'product-delete')) ? cfg.action : '';
+      const action = (live ? isLiveDelete(cfg.action) || cfg.action === 'live-budget' :
+        kind === 'product' && isProductDelete(cfg.action)) ? cfg.action : '';
+      const protectedAction = live ? 'live-delete-keep-zero' : 'product-delete-keep-zero';
+      const protectedMode = action === protectedAction;
+      const keepZeroButton = kind === 'live' || kind === 'product' ?
+        '<div class="row"><button type="button" class="btn ' + (protectedMode ? 'primary' : '') +
+        '" id="keep-zero-delete" aria-pressed="' + protectedMode + '" ' + (state.busy ? 'disabled' : '') +
+        '>低 ROI 删除（保留 0 消耗）</button></div>' : '';
       const fieldDisabled = state.busy ? 'disabled' : '';
-      const conditionFields = action === 'live-delete' ?
+      const conditionFields = isLiveDelete(action) ?
         `<label class="field">调控支付 ROI 低于<input id="live-delete-roi" type="number" min="0" step="0.01" value="${esc(cfg.liveDeleteRoi)}" ${fieldDisabled}></label>` :
         action === 'live-budget' ?
         `<div class="grid"><label class="field">调控支付 ROI 不低于<input id="live-budget-roi" type="number" min="0" step="0.01" value="${esc(cfg.liveBudgetRoi)}" ${fieldDisabled}></label><label class="field">预算 − 消耗低于（元）<input id="gap" type="number" min="0" step="0.01" value="${esc(cfg.gap)}" ${fieldDisabled}></label><label class="field">每条追加预算（元）<input id="add" type="number" min="0.01" step="0.01" value="${esc(cfg.add)}" ${fieldDisabled}></label></div>` :
-        action === 'product-delete' ?
+        isProductDelete(action) ?
         `<label class="field">调控 ROI 低于（综合营销 / 支付共用）<input id="product-roi" type="number" min="0" step="0.01" value="${esc(cfg.productRoi)}" ${fieldDisabled}></label>` :
         '<div class="hint">选择操作后，填写该操作需要的条件。</div>';
-      const conditionHint = action === 'live-delete' ? '仅筛选当前页“调控中”且 ROI 低于阈值的任务。' :
+      const conditionHint = isLiveDelete(action) ? '仅筛选当前页“调控中”且 ROI 低于阈值的任务。' :
         action === 'live-budget' ? 'ROI 达标后，调控中任务按预算与消耗的差值阈值筛选。已暂停且提示“任务预算不足”的任务，只有消耗达到当前预算才会追加。' :
-        action === 'product-delete' ? '只填一个 ROI 阈值，按页面实际显示的综合营销 ROI / 支付 ROI 判断；两列都显示时共用该阈值，任一列为“—”或低于阈值即符合条件，不相加、不取平均。仍要求综合成本和消耗都大于 0；未显示的列不参与判断。升级时旧阈值不一致会留空，请重新填写。' : '';
+        isProductDelete(action) ? '只填一个 ROI 阈值，按页面实际显示的综合营销 ROI / 支付 ROI 判断；两列都显示时共用该阈值，任一列为“—”或低于阈值即符合条件，不相加、不取平均。仍要求综合成本和消耗都大于 0；未显示的列不参与判断。升级时旧阈值不一致会留空，请重新填写。' : '';
       const targets = p?.targets || [];
       const paused = !!checkpoint();
       const missingProductRoi = p?.kind === 'product' ? ['调控综合营销ROI', '调控支付ROI']
         .filter(label => !p.roiLabels.includes(label)) : [];
-      const previewItems = targets.slice(0, 100).map(x => `<div class="item"><b>${esc(x.name || x.id)}</b><span class="pill">ID ${esc(x.id)}</span>${p.params.action === 'product-delete' ? `<span class="pill">调控综合营销ROI ${Number.isFinite(x.marketingRoi) ? esc(x.marketingRoi) : x.marketingRoiDash ? '—' : '不可用'}</span><span class="pill">调控支付ROI ${Number.isFinite(x.paymentRoi) ? esc(x.paymentRoi) : x.paymentRoiDash ? '—' : '不可用'}</span><span class="pill">综合成本 ${yuan(x.comprehensiveCost)} 元</span><span class="pill">调控消耗 ${yuan(x.spend)} 元</span>` : `<span class="pill">ROI ${esc(x.roi)}</span>`}${Number.isInteger(x.budget) ? `<span class="pill">预算 ${yuan(x.budget)}</span><span class="pill">消耗 ${yuan(x.spend)}</span>` : ''}${p.params.action === 'live-budget' ? `<span class="pill">拟改为 ${yuan(x.budget + p.params.add)}</span>` : ''}</div>`).join('');
+      const previewItems = targets.slice(0, 100).map(x => `<div class="item"><b>${esc(x.name || x.id)}</b><span class="pill">ID ${esc(x.id)}</span>${isProductDelete(p.params.action) ? `<span class="pill">调控综合营销ROI ${Number.isFinite(x.marketingRoi) ? esc(x.marketingRoi) : x.marketingRoiDash ? '—' : '不可用'}</span><span class="pill">调控支付ROI ${Number.isFinite(x.paymentRoi) ? esc(x.paymentRoi) : x.paymentRoiDash ? '—' : '不可用'}</span><span class="pill">综合成本 ${yuan(x.comprehensiveCost)} 元</span><span class="pill">调控消耗 ${yuan(x.spend)} 元</span>` : `<span class="pill">ROI ${esc(x.roi)}</span>`}${Number.isInteger(x.budget) ? `<span class="pill">预算 ${yuan(x.budget)}</span><span class="pill">消耗 ${yuan(x.spend)}</span>` : ''}${p.params.action === 'live-budget' ? `<span class="pill">拟改为 ${yuan(x.budget + p.params.add)}</span>` : ''}</div>`).join('');
       shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${state.open ? 'none' : 'block'};top:${esc(state.launcherTop)}%" title="点击展开，拖动调整位置">调控助手</button>
-        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>千川调控助手</strong><small>v0.1.16 · 按计划预填 ROI 和追加预算参数 · 默认静默最小化</small></div><button id="minimize" title="最小化">−</button></div><div class="body">
+        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>千川调控助手</strong><small>v0.1.17 · 按计划预填 ROI 和追加预算参数 · 默认静默最小化</small></div><button id="minimize" title="最小化">−</button></div><div class="body">
         <div class="card"><div class="eyebrow">锁定当前计划</div><div class="title">${esc(lock?.planName || '尚未锁定')}</div><div class="muted">账户 ${esc(lock?.accountId || '—')} · 计划 ${esc(lock?.planId || '—')} · ${lock?.kind === 'live' ? '推直播' : lock?.kind === 'product' ? '推商品' : '未识别'}</div>${needsRelock ? '<div class="hint warn">当前页面与已锁定计划不同，请重新锁定当前计划。</div>' : ''}<div class="row"><button id="lock" class="btn" ${state.busy ? 'disabled' : ''}>锁定当前计划</button></div></div>
-        <div class="card"><div class="eyebrow">筛选条件</div><label class="field">本次操作<select id="action" ${fieldDisabled}><option value="">请选择</option>${choices}</select></label>${conditionFields}<div class="hint">锁定商品计划时自动选择低 ROI 删除；名单内预填 ROI，名单外留空。可手动修改；重新锁定或重新选择直播低 ROI 删除会恢复默认值。</div>${conditionHint ? `<div class="hint">${conditionHint}</div>` : ''}</div>
+        <div class="card"><div class="eyebrow">筛选条件</div><label class="field">本次操作<select id="action" ${fieldDisabled}><option value="">请选择</option>${choices}${protectedMode ? '<option value="' + protectedAction + '" hidden>低 ROI 删除（保留 0 消耗）</option>' : ''}</select></label>${keepZeroButton}${conditionFields}
+        ${protectedMode ? '<div class="hint">只筛选调控消耗已确认大于 0 且符合低 ROI 删除条件的任务。</div>' : ''}<div class="hint">锁定商品计划时自动选择低 ROI 删除；名单内预填 ROI，名单外留空。可手动修改；重新锁定或重新选择直播低 ROI 删除会恢复默认值。</div>${conditionHint ? `<div class="hint">${conditionHint}</div>` : ''}</div>
         <div class="card"><div class="eyebrow">执行本页</div><div class="hint warn">先检查并核对任务清单，再点击执行。直播删除仅勾选本页合格任务并批量删除；商品删除逐条执行；预算逐条改为当前值加设定金额。可先在千川选 100 条/页；跨页请逐页检查。删除后不可恢复。</div><div class="row"><button id="preview" class="btn" ${state.busy || !lock ? 'disabled' : ''}>检查本页</button><button id="execute" class="btn primary" ${state.busy || paused || !p?.targets.length ? 'disabled' : ''}>执行本页 ${targets.length} 条</button><button id="stop" class="btn stop" ${state.busy ? '' : 'disabled'}>停止</button></div>${paused ? '<div class="row"><button id="resume" class="btn primary" '+ (state.busy ? 'disabled' : '') +'>继续本轮</button><button id="close-run" class="btn" '+ (state.busy ? 'disabled' : '') +'>结束本轮</button></div>' : ''}${p?.targets.length ? '<label class="check"><input id="ack" type="checkbox">我已核对下方任务 ID、ROI 和金额，确认执行本页操作</label>' : ''}</div>
         <div class="card"><div class="eyebrow">执行状态</div><div class="status">${esc(state.phase)}</div>${p ? `<div class="hint">第 ${esc(p.page)} 页 · ${esc(p.size || '当前条数')} · ROI 列：${esc(p.roiLabels.join('、'))} · 预览于 ${new Date(p.at).toLocaleTimeString('zh-CN', { hour12: false })}</div>${missingProductRoi.length ? `<div class="hint warn">当前表格未显示：${esc(missingProductRoi.join('、'))}；这些指标不参与判定。</div>` : ''}<div style="max-height:240px;overflow:auto;margin-top:8px">${previewItems || '<div class="muted">本页没有符合条件的任务</div>'}</div>` : '<div class="hint">尚未生成本页预览</div>'}</div>
         <div class="card"><div class="eyebrow">执行记录</div><div class="log">${esc(state.logs.join('\n') || '尚无记录')}</div></div><div class="card"><div class="eyebrow">结果报告</div><div class="report">${esc(state.report || '执行后生成报告')}</div><div class="row"><button id="copy" class="btn">复制报告</button></div></div></div></div>`;
       const actionInput = shadow.getElementById('action');
       actionInput.value = action;
       actionInput.onchange = e => { changeAction(e.target.value); };
+      const keepZeroDelete = shadow.getElementById('keep-zero-delete');
+      if (keepZeroDelete) keepZeroDelete.onclick = () => {
+        if (!protectedMode) changeAction(protectedAction);
+      };
       for (const [key, id] of [['liveDeleteRoi', 'live-delete-roi'], ['liveBudgetRoi', 'live-budget-roi'],
         ['gap', 'gap'], ['add', 'add'], ['productRoi', 'product-roi']]) {
         const input = shadow.getElementById(id);

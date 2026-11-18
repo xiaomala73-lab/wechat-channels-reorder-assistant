@@ -7,7 +7,7 @@
 | 千川助手 | Windows | 安卓 |
 | --- | --- | --- |
 | 直播定时调速 | [v1.2.10](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js) | [v1.2.14](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js) |
-| 调控 | [v0.1.16](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js) | [v0.1.21](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js) |
+| 调控 | [v0.1.17](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js) | [v0.1.22](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js) |
 | 素材追投 | [v0.4.40](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js) | [v0.4.42](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js) |
 | 零消耗素材清理 | [v1.1.8](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-windows.user.js) | [v1.1.10](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-android.user.js) |
 
@@ -60,7 +60,9 @@ Windows `v0.1.15` / 安卓 `v0.1.20` 起，直播任务因「任务预算不足�
 
 Windows `v0.1.12` / 安卓 `v0.1.17` 的商品调控只需输入一个「调控 ROI 阈值」：自动按当前任务表显示的「调控综合营销ROI」或「调控支付ROI」判定；两列都显示时共用此阈值，保留原来任一已显示列低于阈值或为「—」即入选的规则，不相加、不取平均。未显示列不参与判断，综合成本和调控消耗必须均大于零；仍需先检查清单，再确认执行。
 
-旧版两项阈值相同或只保存一项时自动继承；两项不同则留空，必须重新填写，避免擅自改变删除门槛。直播和商品的低 ROI 删除都保留调控消耗为 0 或无法确认消耗的任务；商品删除还要求综合成本大于 0。直播删除仍按调控支付 ROI 阈值筛选调控中任务，追加预算规则不变。
+旧版两项阈值相同或只保存一项时自动继承；两项不同则留空，必须重新填写。
+
+Windows `v0.1.17` / 安卓 `v0.1.22` 在「筛选条件」里新增独立按钮「低 ROI 删除（保留 0 消耗）」。锁定直播或商品计划后，点击该按钮，设置 ROI，再检查本页并确认执行。该入口只允许删除消耗确认大于 0 且符合低 ROI 条件的任务。原「本次操作」下拉框保留之前的规则：直播按调控状态和支付 ROI 筛选，商品原本就要求综合成本和调控消耗都大于 0。
 
 ## 本地验证
 

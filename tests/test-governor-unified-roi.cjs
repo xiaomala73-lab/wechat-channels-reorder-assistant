@@ -23,8 +23,17 @@ for (const platform of ['windows','android']) {
     api.setAction('live-delete');
     assert.equal(api.settings().roi,2);
     assert.equal(api.eligible({roi:1,status:'调控中',spend:10},api.settings()),true);
-    assert.equal(api.eligible({roi:1,status:'调控中',spend:0},api.settings()),false);
-    assert.equal(api.eligible({roi:1,status:'调控中',spend:NaN},api.settings()),false);
+    assert.equal(api.eligible({roi:1,status:'调控中',spend:0},api.settings()),true);
+    assert.equal(api.eligible({roi:1,status:'调控中',spend:NaN},api.settings()),true);
+    api.setAction('live-delete-keep-zero');
+    const protectedSettings=api.settings();
+    const task={roi:1,status:'调控中'};
+    assert.equal(protectedSettings.action,'live-delete-keep-zero');
+    assert.equal(api.eligible({...task,spend:0},protectedSettings),false);
+    assert.equal(api.eligible({...task,spend:NaN},protectedSettings),false);
+    assert.equal(api.eligible({...task,spend:1},protectedSettings),true);
+    assert.equal(api.eligible({...task,spend:1,roi:2},protectedSettings),false);
+    assert.equal(api.eligible({...task,spend:1,status:'已暂停'},protectedSettings),false);
     api.setAction('live-budget');
     const p = api.settings();
     assert.equal(p.roi,3); assert.equal(p.gap,500); assert.equal(p.add,2000);
@@ -82,5 +91,13 @@ for (const platform of ['windows','android']) {
     assert.equal(api.eligible({...row,paymentRoiDash:true},p),true);
     assert.equal(api.eligible({...row,marketingRoi:1,comprehensiveCost:0},p),false);
     assert.equal(api.eligible({...row,paymentRoi:1,spend:0},p),false);
+    api.setAction('product-delete-keep-zero');
+    const protectedSettings = api.settings();
+    assert.equal(protectedSettings.action,'product-delete-keep-zero');
+    assert.equal(api.eligible({...row,paymentRoi:1},protectedSettings),true);
+    assert.equal(api.eligible({...row,paymentRoi:3},protectedSettings),false);
+    assert.equal(api.eligible({...row,paymentRoi:1,spend:0},protectedSettings),false);
+    assert.equal(api.eligible({...row,paymentRoi:1,spend:NaN},protectedSettings),false);
+    assert.equal(api.eligible({...row,paymentRoi:1,comprehensiveCost:0},protectedSettings),false);
   });
 }

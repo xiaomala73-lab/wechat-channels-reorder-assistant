@@ -66,7 +66,8 @@ for (const os of ['windows', 'android']) {
         state,tabToken:'',URL,location:{href:'https://example.test/?dateRange=today'},
         settings:() => p.params, assertLock:() => table.d, document:{querySelectorAll:() => []},
         taskTable:() => table, rowsById:() => new Map(items.map(x => [x.id,x])),
-        text:el => el.innerText, log:() => {}, visible:() => true, eligible:x => x.allowed
+        text:el => el.innerText, log:() => {}, visible:() => true, eligible:(x, params) => x.allowed &&
+          (params.action !== 'live-delete-keep-zero' || x.spend > 0)
       });
     await assert.rejects(api.resumePreview(api.checkpoint()), /不会重提/);
     assert.equal(api.checkpoint().remaining.length,4);
@@ -78,6 +79,20 @@ for (const os of ['windows', 'android']) {
     table.page='1'; table.d.drawer.innerText='共 100 条任务';
     assert.equal(api.actionConfirmed(p,{ids:['99'],budget:null,total:101},true),true);
     assert.equal(api.actionConfirmed(p,{ids:['2'],budget:null,total:101},true),false);
+
+    table.page='2';
+    p.params={action:'live-delete',roi:2};
+    items=[{...row('5',1000),spend:0},{...row('6',1000),spend:1}];
+    const original={preview:p,pending:null,remaining:items};
+    state.continuation['a:x:live']=original;
+    const legacy=await api.resumePreview(api.checkpoint());
+    assert.equal(legacy.params.action,'live-delete-keep-zero');
+    assert.deepEqual([...legacy.targets.map(x => x.id)],['6']);
+
+    state.continuation['a:x:live']={...original,deleteModeVersion:2};
+    const current=await api.resumePreview(api.checkpoint());
+    assert.equal(current.params.action,'live-delete');
+    assert.deepEqual([...current.targets.map(x => x.id)],['5','6']);
   });
 
   test(os + ': cleaner keeps the deletion quota and does not replay unconfirmed operations', async () => {

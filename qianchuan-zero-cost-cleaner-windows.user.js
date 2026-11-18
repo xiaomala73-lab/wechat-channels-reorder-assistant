@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巨量千川零消耗素材清理助手
 // @namespace    local.qianchuan.empty-cost-cleaner
-// @version      1.1.7
+// @version      1.1.8
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-windows.user.js
 // @description  自选投放视频清理；末页保留一条；AIGC警告临时逐条排查，补标成功立即恢复批量删除
@@ -496,6 +496,8 @@
       if (!selectionMatches(ids) || ids.some(id => !rows().some(r => r.id === id && eligible(r)))) {
         throw new Error('点击确定前素材 ID、条件或勾选发生变化，未删除');
       }
+      if (pageInfo().page !== info.page || pageInfo().total !== oldTotal) throw new Error('确认前素材分页或总数已变化');
+      stageCleanerAction({kind: 'delete', ids, total: oldTotal});
     }, QUICK_CLICK);
     // 先等页面自行更新；未更新时只翻页重读，不再次点击删除。
     let evidence = await deletionEvidence(ids, oldTotal, 8000);
@@ -513,6 +515,7 @@
       throw new Error('目标 ID ' + ids.join(', ') + ' 删除结果不明确：' + evidence.observed + '；已停止，禁止直接重试删除');
     }
     state.deleted.push(...ids);
+    saveCleanerCheckpoint({pending: null, selection: []});
     log('确认删除 ' + ids.length + ' 条；累计 ' + state.deleted.length + '/' + cfg.quota);
     await wait(() => !deletionDialog(), '删除弹窗消失', 10000, true);
   }
@@ -536,9 +539,13 @@
     if (!popup) throw new Error('无法定位 AIGC 标签确认面板');
     const confirms = Array.from(popup.querySelectorAll('button')).filter(el => visible(el) && ['确定','确认'].includes(text(el)));
     if (confirms.length !== 1) throw new Error('AIGC 标签确认按钮不唯一');
-    await click(confirms[0], '确认 AIGC跑量 标签');
+    await click(confirms[0], '确认 AIGC跑量 标签', () => {
+      if (!selectionMatches([id]) || pageInfo().page !== cleanerCheckpoint()?.page) throw new Error('补标前素材勾选或页码变化');
+      stageCleanerAction({kind: 'tag', id});
+    });
     await wait(() => rows().some(r => r.id === id && r.label.includes('AIGC跑量')), 'AIGC 跑量标签生效', 15000);
     state.tagged.push(id);
+    saveCleanerCheckpoint({pending: null, fallbackIds: []});
     log('素材 ' + id + ' 触发 AIGC 警告，已添加 AIGC跑量 标签');
     if (selectedRows().length) await clearSelection();
   }
@@ -573,6 +580,7 @@
     try {
       if (dialogKind(prompt) === 'aigc') {
         await dismissDialog(prompt.dialog);
+        saveCleanerCheckpoint({fallbackIds: [...new Set([...cleanerCheckpoint().fallbackIds, ...ids])]});
         await clearSelection();
         log('本组 ' + ids.length + ' 条出现 AIGC 警告；已取消批量删除，改为逐条排查');
         return 'aigc';
@@ -628,22 +636,105 @@
     render();
     pending.resolve(approved);
   }
-  async function run(dry) {
-    if (state.busy) return;
+  const CLEANER_CONTINUE_PREFIX = 'qc-cleaner-continue-v1-';
+
+  function cleanerContinueKey() {
+    const lock = state.lock;
+    return lock ? CLEANER_CONTINUE_PREFIX + lock.accountId + ':' + lock.planId + ':' + lock.planKind : null;
+  }
+  function cleanerCheckpoint() {
+    try { return JSON.parse(sessionStorage.getItem(cleanerContinueKey()) || 'null'); }
+    catch (_) { return null; }
+  }
+  function saveCleanerCheckpoint(patch) {
+    const key = cleanerContinueKey();
+    if (!key) throw new Error('当前计划未锁定，无法记录本轮进度');
+    if (!patch) { sessionStorage.removeItem(key); return; }
+    const point = {...cleanerCheckpoint(), ...patch, deleted: state.deleted,
+      tagged: state.tagged, tailIds: state.protectedTailIds, logs: state.logs};
+    sessionStorage.setItem(key, JSON.stringify(point));
+  }
+  function stageCleanerAction(pending) {
+    if (cleanerCheckpoint()?.pending) throw new Error('上次操作仍待核实，未再次提交');
+    saveCleanerCheckpoint({pending});
+  }
+  async function recoverCleanerCheckpoint(point) {
+    const drawer = context().drawer;
+    if (deletionDialog() || Array.from(document.querySelectorAll('[role="dialog"],[role="alertdialog"],.main-vmok-plugin-modal__wrap,.main-vmok-plugin-oc-popover-text__content'))
+      .some(el => visible(el) && !el.contains(drawer) && text(el).includes('AIGC跑量') &&
+        Array.from(el.querySelectorAll('button')).some(b => visible(b) && ['确认','确定'].includes(text(b))))) {
+      throw new Error('请先核实并关闭千川删除或标签弹窗');
+    }
+    const checked = Array.from(table().body.querySelectorAll('tbody tr input[type="checkbox"]')).some(el => el.checked);
+    if (checked || /已选\s*\d+\s*个\s*视频/.test(text(drawer))) {
+      const allowed = point.selection || [];
+      const ids = selectedRows().map(row => row.id);
+      if (pageInfo().page !== point.page || !ids.length || !selectionMatches(ids) ||
+          ids.some(id => !allowed.includes(id))) throw new Error('请先手动清除页面残留的勾选');
+      await clearSelection();
+    }
+    await ensureFilter();
+    await ensureSizeSort();
+    if (point.page == null) await lastPage();
+    else await restoreScanPage(point.page);
+    const pending = point.pending;
+    if (!pending) return;
+    if (pending.kind === 'delete') {
+      const evidence = await deletionEvidence(pending.ids, pending.total, 4000);
+      if (!evidence.confirmed) throw new Error('上次删除结果未核实：' + pending.ids.join(', ') + '；' + evidence.observed + '。不会重复删除');
+      state.deleted = [...new Set([...state.deleted, ...pending.ids])];
+      saveCleanerCheckpoint({pending: null, selection: []});
+    } else {
+      if (!rows().some(r => r.id === pending.id && r.label.includes('AIGC跑量'))) {
+        throw new Error('素材 ' + pending.id + ' 的 AIGC 标签尚未核实，不会重复添加');
+      }
+      state.tagged = [...new Set([...state.tagged, pending.id])];
+      saveCleanerCheckpoint({pending: null, selection: [], fallbackIds: []});
+    }
+    log('已从素材列表核实上次操作，继续剩余额度');
+  }
+  function closePausedRun() {
+    if (state.busy || state.pendingApproval) return;
+    try {
+      context();
+      if (cleanerCheckpoint()?.pending) throw new Error('上次删除或补标尚未核实，请核对后继续本轮');
+      if (!window.confirm('结束本轮？已删除或补标的素材会保留当前状态。')) return;
+      saveCleanerCheckpoint(null);
+      phase('已结束本轮，可以重新检查末页');
+    } catch (error) { phase(error.message); }
+  }
+  async function run(dry, resume = false) {
+    if (state.busy || state.pendingApproval) return;
     try {
       if (!state.lock) throw new Error('请先锁定当前计划');
       if (!/^\d{4}-\d{2}-\d{2}$/.test(cfg.cutoff) || Number.isNaN(Date.parse(cfg.cutoff + 'T00:00:00'))) throw new Error('请输入有效的截止日期');
       if (!Number.isInteger(cfg.quota) || cfg.quota < 1 || cfg.quota > MAX_QUOTA) throw new Error('删除数量须为 1—' + MAX_QUOTA);
       context();
-      if (!dry) {
+      const point = cleanerCheckpoint();
+      if (resume && !point) throw new Error('当前计划没有可继续的本轮记录');
+      if (point && !resume) throw new Error('本轮尚未结束，请使用「继续本轮」');
+      if (resume && (point.cutoff !== cfg.cutoff || point.quota !== cfg.quota ||
+          point.dateRange !== new URL(location.href).searchParams.get('dateRange'))) {
+        throw new Error('请恢复原截止日、删除上限和千川数据日期后再继续');
+      }
+      if (!dry && !resume) {
         const ok = await requestRunApproval();
         if (!ok) return;
         context();
       }
       state.busy = true; state.stop = false; state.deleted = []; state.tagged = []; state.skipped = []; state.failed = []; state.protectedTailIds = []; state.logs = [];
       state.viewport = { width: innerWidth, height: innerHeight, scale: devicePixelRatio, screenWidth: screen.width, screenHeight: screen.height };
-      phase(dry ? '演练：定位末页并检查，不勾选或删除' : '正式执行：准备素材页');
-      await prepare();
+      phase(resume ? '正在核对上次进度' : dry ? '演练：定位末页并检查，不勾选或删除' : '正式执行：准备素材页');
+      if (resume) {
+        state.deleted = point.deleted; state.tagged = point.tagged;
+        state.protectedTailIds = point.tailIds; state.logs = point.logs;
+        await recoverCleanerCheckpoint(point);
+        log('从本轮素材页继续，已删除 ' + state.deleted.length + '/' + cfg.quota + ' 条');
+      } else {
+        if (!dry) saveCleanerCheckpoint({cutoff: cfg.cutoff, quota: cfg.quota, page: null,
+          dateRange: new URL(location.href).searchParams.get('dateRange'), selection: [], fallbackIds: [], pending: null});
+        await prepare();
+      }
       if (dry) {
         const rr = rows();
         protectFinalPageTail(pageInfo(), rr);
@@ -654,7 +745,7 @@
         return;
       }
       let visits = 0, scanned = 0, reason = '', resumePage = null;
-      const singleFallbackIds = new Set();
+      const singleFallbackIds = new Set(cleanerCheckpoint()?.fallbackIds || []);
       while (state.deleted.length < cfg.quota) {
         assertRun();
         if (++visits > 1000) throw new Error('扫描超过1000轮，已停止以避免循环');
@@ -664,12 +755,14 @@
         resumePage = null;
         const info = pageInfo(), current = rows();
         protectFinalPageTail(info, current);
+        saveCleanerCheckpoint({page: info.page, selection: [], fallbackIds: [...singleFallbackIds]});
         scanned++;
         const candidates = current.filter(eligible).slice(0, cfg.quota - state.deleted.length);
         if (candidates.length) {
           const fallback = candidates.find(r => singleFallbackIds.has(r.id));
           if (fallback) {
             log('第 ' + info.page + '/' + info.pages + ' 页逐条排查 AIGC 警告组素材 ' + fallback.id);
+            saveCleanerCheckpoint({selection: [fallback.id]});
             const result = await processOne(fallback.id);
             singleFallbackIds.delete(fallback.id);
             if (result === 'tagged') {
@@ -680,15 +773,18 @@
           } else {
             const ids = candidates.map(r => r.id);
             log('第 ' + info.page + '/' + info.pages + ' 页拟批量删除 ' + ids.length + ' 条；逐条核对 ID、日期、成本和标签');
+            saveCleanerCheckpoint({selection: ids});
             const result = await processBatch(ids);
             if (result === 'aigc') ids.forEach(id => singleFallbackIds.add(id));
             else resumePage = 'last';
           }
+          saveCleanerCheckpoint({fallbackIds: [...singleFallbackIds]});
           continue;
         }
         if (info.page <= 1) { reason = '已扫描到第1页，无更多符合条件的素材；末页保留素材不会删除'; break; }
         if (!(await move('prev'))) { reason = '无法继续翻上一页'; break; }
       }
+      saveCleanerCheckpoint(null);
       if (!reason) reason = '达到删除数量上限 ' + cfg.quota + ' 条';
       phase('已停止：' + reason);
       log('扫描页次 ' + scanned + '，删除 ' + state.deleted.length + ' 条，补标 ' + state.tagged.length + ' 条');
@@ -738,10 +834,10 @@
     const planLabel = live ? '直播在投计划' : '商品在投计划';
     const sourceLabel = live ? '视频类型为自选投放视频' : '素材类型为自选投放素材';
     shadow.innerHTML = css + `<button class="launcher" id="launch" title="点击展开，拖动调整位置" aria-label="展开千川零消耗素材清理助手" style="display:${state.panelOpen?'none':'block'};top:${escapeHTML(state.launcherTop)}%">清理助手</button>
-      <div class="panel" style="display:${state.panelOpen?'flex':'none'}"><div class="head"><div><strong>千川零消耗素材清理助手</strong><small>v1.1.7 · ${planLabel} · 自选投放视频</small></div><button id="close" title="最小化" aria-label="最小化助手">−</button></div><div class="body">
+      <div class="panel" style="display:${state.panelOpen?'flex':'none'}"><div class="head"><div><strong>千川零消耗素材清理助手</strong><small>v1.1.8 · ${planLabel} · 自选投放视频</small></div><button id="close" title="最小化" aria-label="最小化助手">−</button></div><div class="body">
       <div class="card"><div class="eyebrow">锁定账户 / 当前计划</div><div class="title">${lock?escapeHTML(lock.accountName):'尚未锁定'}</div><div class="muted">${lock?escapeHTML(lock.accountId):''}</div><div class="title" style="margin-top:6px">${lock?escapeHTML(lock.planName):'请先打开素材页'}</div><div class="muted">${lock?escapeHTML(lock.planId):''}</div><div class="row"><button class="btn" id="lock" ${state.busy?'disabled':''}>锁定当前计划</button></div></div>
       <div class="card"><div class="eyebrow">筛选条件</div><div class="grid"><label class="field">创建日期严格早于<input id="cutoff" type="date" value="${escapeHTML(cfg.cutoff)}" ${state.busy?'disabled':''}></label><label class="field">最多删除条数<input id="quota" type="number" min="1" max="${MAX_QUOTA}" step="1" value="${escapeHTML(cfg.quota)}" ${state.busy?'disabled':''}></label></div><div class="hint">${live?'直播素材→视频页筛选“视频类型：自选投放视频”':'商品素材页筛选“素材类型：自选投放”'}，20 条/页；按<strong>综合成本(元)降序</strong>从末页往前检查。仅删成本为空（-、--、暂无数据或空白）、日期早于截止日、且无 AIGC跑量 标签的素材。</div></div>
-      <div class="card"><div class="eyebrow">执行</div><div class="hint warn">先演练查看末页候选。末页全部合格时保留最后一条，避免删除后空页；其余合格素材优先整批处理。出现 AIGC 警告则取消本批，逐条排查；找到并补标 AIGC 素材后恢复批量删除，再遇警告才重新排查。提示不明确或删除结果未确认时立即停止，不重复提交。</div><div class="row"><button class="btn" id="preview" ${state.busy?'disabled':''}>检查末页</button><button class="btn primary" id="start" ${state.busy?'disabled':''}>开始清理</button><button class="btn stop" id="stop" ${state.busy?'':'disabled'}>停止</button></div></div>
+      <div class="card"><div class="eyebrow">执行</div><div class="hint warn">先演练查看末页候选。末页全部合格时保留最后一条，避免删除后空页；其余合格素材优先整批处理。出现 AIGC 警告则取消本批，逐条排查；找到并补标 AIGC 素材后恢复批量删除，再遇警告才重新排查。提示不明确或删除结果未确认时立即停止，不重复提交。</div><div class="row"><button class="btn" id="preview" ${state.busy?'disabled':''}>检查末页</button><button class="btn primary" id="start" ${state.busy || cleanerCheckpoint()?'disabled':''}>开始清理</button><button class="btn stop" id="stop" ${state.busy?'':'disabled'}>停止</button></div>${cleanerCheckpoint() ? `<div class="row"><button class="btn primary" id="resume" ${state.busy?'disabled':''}>继续本轮</button><button class="btn" id="close-run" ${state.busy?'disabled':''}>结束本轮</button></div>` : ''}</div>
       <div class="card"><div class="eyebrow">执行状态</div><div class="status">${escapeHTML(state.phase)}</div><div class="hint">本轮已删 ${state.deleted.length} 条 · 补标 AIGC ${state.tagged.length} 条</div></div>
       <div class="card"><div class="eyebrow">执行记录</div><div class="log">${escapeHTML(state.logs.slice(-35).join('\n')||'尚无记录')}</div></div>
       <div class="card"><div class="eyebrow">结果报告</div><div class="report">${escapeHTML(state.lastReport||'执行后生成报告')}</div><div class="row"><button class="btn" id="copy">复制报告</button></div></div>
@@ -779,6 +875,10 @@
     shadow.querySelector('#lock').onclick = lockCurrent;
     shadow.querySelector('#preview').onclick = () => run(true);
     shadow.querySelector('#start').onclick = () => run(false);
+    const resume = shadow.querySelector('#resume');
+    if (resume) resume.onclick = () => run(false, true);
+    const closeRun = shadow.querySelector('#close-run');
+    if (closeRun) closeRun.onclick = closePausedRun;
     shadow.querySelector('#stop').onclick = () => { state.stop = true; phase('已请求停止；当前动作结束后停止'); };
     shadow.querySelector('#copy').onclick = () => { if (state.lastReport) GM_setClipboard(state.lastReport); };
     shadow.querySelector('#cutoff').onchange = e => { cfg.cutoff = e.target.value; saveCfg(); };
@@ -791,7 +891,6 @@
     if (!event.persisted) return;
     if (state.pendingApproval) closeRunApproval(false);
     state.panelOpen = false;
-    state.busy = false;
     state.stop = true;
     state.phase = '页面已恢复；请重新锁定计划后再执行';
     render();

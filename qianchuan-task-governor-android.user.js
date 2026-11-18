@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Task Governor (Android)
 // @namespace    local.qianchuan.task-governor
-// @version      0.1.20
+// @version      0.1.21
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js
 // @description  Android-compatible task governor; preview and verify each page before deleting tasks or increasing budgets.
@@ -30,6 +30,7 @@
     const LOCK_PREFIX = 'qc-task-governor-lock-v1-';
     const REPORT_PREFIX = 'qc-task-governor-report-v1-';
     const LAUNCHER_KEY = 'qc-task-governor-launcher-top-v1';
+    const CONTINUE_PREFIX = 'qc-governor-continue-v1-';
     const MAX_PREVIEW_AGE = 2 * 60 * 1000;
     let tabToken = '';
     try {
@@ -57,7 +58,7 @@
     const state = {
       open: false, busy: false, stop: false, phase: '\u8bf7\u8fdb\u5165\u8ba1\u5212\u8be6\u60c5\u5e76\u9501\u5b9a\u5f53\u524d\u8ba1\u5212',
       lock: tabToken ? GM_getValue(LOCK_PREFIX + tabToken, null) : null,
-      preview: null, logs: [], report: tabToken ? GM_getValue(REPORT_PREFIX + tabToken, '') : '',
+      preview: null, continuation: tabToken ? GM_getValue(CONTINUE_PREFIX + tabToken, {}) : {}, logs: [], report: tabToken ? GM_getValue(REPORT_PREFIX + tabToken, '') : '',
       scrollTop: 0, launcherTop: Math.max(12, Math.min(88, Number(GM_getValue(LAUNCHER_KEY, 62)) || 62))
     };
     function esc(value) {
@@ -418,7 +419,8 @@
           (Number.isFinite(item.paymentRoi) && item.paymentRoi < params.paymentRoi);
       }
       if (!Number.isFinite(item.roi)) return false;
-      if (params.action === 'live-delete') return /\u8c03\u63a7\u4e2d/.test(item.status) && item.roi < params.roi;
+      if (params.action === 'live-delete') return Number.isSafeInteger(item.spend) && item.spend > 0 &&
+        /\u8c03\u63a7\u4e2d/.test(item.status) && item.roi < params.roi;
       if (params.action !== 'live-budget') return false;
       if (!(item.roi >= params.roi) || !Number.isSafeInteger(item.budget) || item.budget < 0 ||
           !Number.isSafeInteger(item.spend) || item.spend < 0) return false;
@@ -448,6 +450,7 @@
     }
     async function previewPage() {
       if (state.busy) return;
+      if (checkpoint()) { phase('本轮尚未结束，请先继续或结束本轮'); return; }
       readCfg();
       state.busy = true; state.stop = false; state.preview = null; render();
       try {
@@ -511,7 +514,7 @@
       }catch(_){/* Only cancel a uniquely identified deletion dialog. */}
     }
 
-    async function confirmDelete(expected) {
+    async function confirmDelete(expected, beforeSubmit) {
       const modal = await wait(() => {
         try { return visibleDeleteModal(expected); } catch (_) { return null; }
       }, '\u5220\u9664\u786e\u8ba4\u5f39\u7a97', 8000);
@@ -519,17 +522,116 @@
       if(state.stop)throw new Error('\u7528\u6237\u5df2\u505c\u6b62\uff0c\u672a\u786e\u8ba4\u5220\u9664');
       assertLock();
       if(disabled(yes))throw new Error('\u5220\u9664\u786e\u5b9a\u6309\u94ae\u4e0d\u53ef\u7528');
+      beforeSubmit();
       yes.click();
       return modal;
     }
-    async function waitRemoved(ids) {
+    function continuationKey(lock) { return lock ? lock.accountId + ':' + lock.planId + ':' + lock.kind : ''; }
+    function checkpoint() { return state.continuation[continuationKey(state.lock)]; }
+    function saveCheckpoint(value) {
+      const key = continuationKey(state.lock);
+      const records = {...state.continuation};
+      if (value) records[key] = value;
+      else delete records[key];
+      if (tabToken) GM_setValue(CONTINUE_PREFIX + tabToken, records);
+      state.continuation = records;
+    }
+    function taskScope(table) {
+      return JSON.stringify([new URL(location.href).searchParams.get('dateRange'),
+        Array.from(table.d.drawer.querySelectorAll('[class*="filter-echo-item"],input[type="search"],input[placeholder*="任务名称"],th[aria-sort]'))
+          .filter(visible).map(el => [text(el), el.value || '', el.getAttribute('aria-sort') || ''])]);
+    }
+    function checkpointRows(p, table = taskTable(), checkScope = true) {
+      if (table.d.accountId !== p.accountId || table.d.planId !== p.planId || table.d.kind !== p.kind ||
+          table.page !== p.page || table.size !== p.size || (checkScope && taskScope(table) !== p.scope) ||
+          JSON.stringify(table.roiLabels) !== JSON.stringify(p.roiLabels)) {
+        throw new Error('请回到原调控任务页（第 ' + p.page + ' 页，' + p.size + '）并恢复原来的 ROI 列');
+      }
+      return rowsById(table);
+    }
+    function taskTotal(table) {
+      const totals = new Set(Array.from(text(table.d.drawer).matchAll(/共\s*([0-9,]+)\s*条(?:任务|记录)/g),
+        m => Number(m[1].replace(/,/g, ''))));
+      return totals.size === 1 ? [...totals][0] : null;
+    }
+    function stageAction(p, ids, budget = null) {
+      if (state.stop) throw new Error('用户已停止，未提交');
+      const table = taskTable(), record = checkpoint();
+      // The selected-task toolbar can hide the original filters during live batch deletion.
+      const map = checkpointRows(p, table, p.params.action !== 'live-delete');
+      if (!record || record.pending) throw new Error('上次提交未核实，未执行新操作');
+      for (const id of ids) {
+        const expected = p.targets.find(x => x.id === id), fresh = map.get(id);
+        if (!expected || !fresh || !sameValues(expected, fresh) || !eligible(fresh, p.params)) {
+          throw new Error('提交前任务 ' + id + ' 已变化，未提交');
+        }
+      }
+      saveCheckpoint({...record, pending: {ids, budget, total: budget === null ? taskTotal(table) : null}});
+    }
+    function finishAction(ids) {
+      const record = checkpoint();
+      saveCheckpoint({...record, pending: null, remaining: record.remaining.filter(x => !ids.includes(x.id))});
+    }
+    function actionConfirmed(p, pending, recovering) {
+      const table = taskTable();
+      if (table.d.accountId !== p.accountId || table.d.planId !== p.planId || table.d.kind !== p.kind ||
+          taskScope(table) !== p.scope) return false;
+      if (pending.budget !== null) return checkpointRows(p, table).get(pending.ids[0])?.budget === pending.budget;
+      const total = taskTotal(table);
+      const confirmedTotal = Number.isSafeInteger(pending.total) && total === pending.total - pending.ids.length;
+      if (confirmedTotal) {
+        // Removing the last item on a page can move the task list back one page.
+        const size = Number(String(p.size).match(/^\d+/)?.[0]);
+        const last = Math.max(1, Math.ceil(total / size));
+        if (total === 0 && table.page === '1' && table.rows.length === 0) return true;
+        if (size > 0 && Number(p.page) > last && Number(table.page) === last && table.size === p.size) {
+          const map = rowsById(table);
+          return pending.ids.every(id => !map.has(id));
+        }
+      }
+      const map = checkpointRows(p, table);
+      return pending.ids.every(id => !map.has(id)) &&
+        (confirmedTotal || (!recovering && pending.total === null));
+    }
+    async function waitRemoved(p, ids) {
       await wait(() => {
-        try {
-          const table = taskTable();
-          const found = rowsById(table);
-          return ids.every(id => !found.has(id));
-        } catch (_) { return false; }
-      }, '\u5220\u9664\u540e\u4efb\u52a1\u5217\u8868\u66f4\u65b0', 20000);
+        try { return actionConfirmed(p, checkpoint().pending, false); } catch (_) { return false; }
+      }, '删除后任务列表更新', 20000);
+      finishAction(ids);
+    }
+    async function resumePreview(record) {
+      const p = record.preview;
+      if (JSON.stringify(settings()) !== JSON.stringify(p.params)) throw new Error('请恢复本轮原筛选条件再续跑');
+      const {drawer} = assertLock();
+      if (Array.from(document.querySelectorAll('.main-vmok-plugin-modal,[role="dialog"],[class*="popover"][class*="content"]'))
+        .some(el => visible(el) && !el.contains(drawer) &&
+          (el.matches('.main-vmok-plugin-modal,[role="dialog"]') || (text(el).includes('调控日预算') && el.querySelector('input'))))) {
+        throw new Error('请先核实并关闭千川弹窗');
+      }
+      // Read the current task table; never switch pages or reuse a stale row for a write.
+      const table = taskTable();
+      if (record.pending) {
+        if (!actionConfirmed(p, record.pending, true)) throw new Error('上次提交结果仍未核实：' + record.pending.ids.join(', ') + '。请刷新原任务页后再继续；不会重提');
+        log('已从平台列表核实上次提交：' + record.pending.ids.join(', '));
+        finishAction(record.pending.ids);
+      }
+      const remaining = checkpoint().remaining;
+      if (!remaining.length) return {...p, targets: []};
+      const map = checkpointRows(p, table);
+      if (Array.from(map.values()).some(x => x.row.querySelector('input[type="checkbox"]')?.checked ||
+          x.row.querySelector('[role="checkbox"][aria-checked="true"]'))) throw new Error('请先取消页面残留勾选，再继续本轮');
+      const targets = [];
+      for (const old of remaining) {
+        const fresh = map.get(old.id);
+        if (!fresh || !eligible(fresh, p.params) || (p.params.action === 'live-budget' && old.budget !== fresh.budget)) {
+          log('续跑跳过已离开本页、已变更预算或不再达标的任务：' + old.id);
+          continue;
+        }
+        const {row, ...target} = fresh;
+        targets.push(target);
+      }
+      saveCheckpoint({...checkpoint(), remaining: targets});
+      return {...p, targets};
     }
     async function deleteLive(p) {
       const selectedByScript = [];
@@ -566,9 +668,9 @@
         if (!text(modal).replace(/\s+/g,'').includes(expected.replace(/\s+/g,''))) throw new Error('\u5343\u5ddd\u786e\u8ba4\u6570\u91cf\u4e0e\u9884\u89c8\u4e0d\u4e00\u81f4');
         if (state.stop) throw new Error('\u7528\u6237\u5df2\u505c\u6b62\u672c\u8f6e\u64cd\u4f5c');
         for(const old of p.targets){const latest=taskById(old.id);if(!latest||!sameValues(old,latest)||!eligible(latest,p.params))throw new Error('\u786e\u8ba4\u5220\u9664\u524d\u4efb\u52a1 '+old.id+' \u5df2\u53d8\u5316\uff0c\u8bf7\u91cd\u65b0\u68c0\u67e5');}
-        await confirmDelete(expected);
+        await confirmDelete(expected, () => stageAction(p, selectedByScript));
         submitted = true;
-        await waitRemoved(selectedByScript);
+        await waitRemoved(p, selectedByScript);
         log('\u76f4\u64ad\u4efb\u52a1\u672c\u9875\u5df2\u5220\u9664 ' + selectedByScript.length + ' \u6761\uff1a' + selectedByScript.join(', '));
       } finally {
         if (!submitted) {
@@ -613,14 +715,14 @@
           }, '\u4efb\u52a1 ' + old.id + ' \u7684\u5220\u9664\u786e\u8ba4', 8000);
           if (state.stop) throw new Error('\u7528\u6237\u5df2\u505c\u6b62\uff1b\u5df2\u5b8c\u6210 ' + count + ' \u6761');
           const latest=taskById(old.id);if(!latest||!sameValues(old,latest)||!eligible(latest,p.params))throw new Error('\u786e\u8ba4\u5220\u9664\u524d\u4efb\u52a1 '+old.id+' \u5df2\u53d8\u5316\uff0c\u8bf7\u91cd\u65b0\u68c0\u67e5');
-          await confirmDelete(expected);
+          await confirmDelete(expected, () => stageAction(p, [old.id]));
           submitted = true;
         } finally {
           if (!submitted) {
             closeDeleteModal(expected);
           }
         }
-        await waitRemoved([old.id]);
+        await waitRemoved(p, [old.id]);
         count++;
         log('\u5546\u54c1\u7d20\u6750\u8ffd\u6295\u4efb\u52a1\u5df2\u5220\u9664 ' + old.id + '\uff1b\u672c\u9875\u7d2f\u8ba1 ' + count + ' \u6761');
       }
@@ -687,7 +789,7 @@
           (details ? '\u3002\u5343\u5ddd\u5f39\u5c42\uff1a' + details : ''));
       }
     }
-    async function confirmBudget(pop, id, oldBudget, target) {
+    async function confirmBudget(p, pop, id, oldBudget, target) {
       const taskLabel = '\u4efb\u52a1 ' + id;
       const change = yuan(oldBudget) + ' \u2192 ' + yuan(target) + ' \u5143';
       const failurePattern = /\u64cd\u4f5c\u5931\u8d25|\u63d0\u4ea4\u5931\u8d25|\u4fee\u6539\u5931\u8d25|\u4fdd\u5b58\u5931\u8d25|\u8bf7\u6c42\u5931\u8d25|\u8d26\u6237\u4f59\u989d\u4e0d\u8db3|\u7cfb\u7edf\u7e41\u5fd9/;
@@ -707,10 +809,11 @@
       log(taskLabel + ' \u63d0\u4ea4\u9884\u7b97 ' + change);
       observer.observe(document.body, { childList: true, subtree: true, characterData: true });
       try {
+        stageAction(p, [id], target);
         pop.confirm.click();
         const result = await wait(() => {
           try {
-            lastBudget = taskById(id)?.budget;
+            lastBudget = checkpointRows(p).get(id)?.budget;
             lastReadError = '';
           } catch (error) {
             lastBudget = NaN;
@@ -783,25 +886,46 @@
           if(!latest||!sameValues(old,latest)||!eligible(latest,p.params))throw new Error('\u786e\u8ba4\u524d\u4efb\u52a1\u6570\u636e\u5df2\u53d8\u5316\uff0c\u8bf7\u91cd\u65b0\u68c0\u67e5');
           if(disabled(pop.confirm))throw new Error('\u9884\u7b97\u786e\u5b9a\u6309\u94ae\u4e0d\u53ef\u7528');
           submitted = true;
-          await confirmBudget(pop, old.id, old.budget, target);
+          await confirmBudget(p, pop, old.id, old.budget, target);
+          finishAction([old.id]);
           count++;
           log('\u4efb\u52a1 ' + old.id + ' \u9884\u7b97 ' + yuan(old.budget) + ' \u2192 ' + yuan(target) + ' \u5143');
         } finally { if (!submitted && pop.cancel.isConnected) pop.cancel.click(); }
       }
     }
-    async function executePage() {
+    function closePausedRun() {
+      if (state.busy) return;
+      try {
+        assertLock();
+        if (checkpoint()?.pending) throw new Error('上次提交尚未核实，请核对后继续本轮');
+        if (!window.confirm('结束本轮？已完成的操作会保留。')) return;
+        saveCheckpoint(null);
+        state.preview = null;
+        phase('已结束本轮，请重新检查后再执行');
+      } catch (error) { phase(error.message); }
+    }
+    async function executePage(resume = false) {
       if (state.busy) return;
       readCfg();
       state.busy = true; state.stop = false; render();
       let action = '';
       try {
-        const { p } = currentPreview();
+        assertLock();
+        const existing = checkpoint();
+        if (resume && !existing) throw new Error('当前计划没有可继续的本轮记录');
+        if (!resume && existing) throw new Error('本轮尚未结束，请使用「继续本轮」');
+        const preflight = resume ? null : currentPreview();
+        const p = resume ? await resumePreview(existing) : {...preflight.p, scope: taskScope(preflight.t)};
+        if (!resume) saveCheckpoint({preview: {...p, targets: []}, remaining: p.targets, pending: null});
         action = p.params.action;
         phase('\u6b63\u5728\u6267\u884c\u7b2c ' + p.page + ' \u9875\uff0c\u5171 ' + p.targets.length + ' \u6761');
         log('\u5f00\u59cb\u6267\u884c ' + action + '\uff0c\u4efb\u52a1 ID\uff1a' + p.targets.map(x => x.id).join(', '));
-        if (action === 'live-delete') await deleteLive(p);
-        else if (action === 'product-delete') await deleteProduct(p);
-        else await addBudget(p);
+        if (p.targets.length) {
+          if (action === 'live-delete') await deleteLive(p);
+          else if (action === 'product-delete') await deleteProduct(p);
+          else await addBudget(p);
+        }
+        saveCheckpoint(null);
         state.preview = null;
         phase('\u672c\u9875\u64cd\u4f5c\u5b8c\u6210\uff0c\u8bf7\u7b49\u5f85\u5e73\u53f0\u5237\u65b0\u540e\u518d\u68c0\u67e5\u4e0b\u4e00\u9875');
         report('\u672c\u9875 ' + p.targets.length + ' \u6761\u4efb\u52a1\u5df2\u5b8c\u6210\uff1b\u53ef\u7ee7\u7eed\u68c0\u67e5\u5f53\u524d\u9875\u6216\u4e0b\u4e00\u9875');
@@ -865,7 +989,19 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       right: Math.max(0, window.innerWidth - view.left - view.width),
       defaultRatio: range ? clamp((initialTop - min) / range, 0, 1) : 0};
   }
+  function placePanel() {
+    const view = viewport();
+    const style = shadow.host.style;
+    // Layout in unzoomed CSS pixels, then anchor to the visible part of the page.
+    const margin = Math.min(12, (view.width / view.unit) / 12, (view.height / view.unit) / 12);
+    style.setProperty('--qc-panel-right', (window.innerWidth - view.left - view.width + margin * view.unit) + 'px');
+    style.setProperty('--qc-panel-top', (view.top + margin * view.unit) + 'px');
+    style.setProperty('--qc-panel-scale', String(view.unit));
+    style.setProperty('--qc-panel-width', Math.min(390, view.width / view.unit - margin * 2) + 'px');
+    style.setProperty('--qc-panel-height', (view.height / view.unit - margin * 2) + 'px');
+  }
   function place() {
+    placePanel();
     if (!launcher?.isConnected) return;
     const mode = orientation(), size = geometry(), saved = read()[mode];
     const ratio = typeof saved === 'number' && Number.isFinite(saved) ? clamp(saved, 0, 1) : size.defaultRatio;
@@ -893,16 +1029,17 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       desired[i].top = Math.min(desired[i].top, i === desired.length - 1
         ? size.min + size.range : desired[i + 1].top - distance);
     const top = desired.find(item => item.slot === slot).top;
-    launcher.style.transform = 'none';
+    launcher.style.transform = 'scale(' + size.unit + ')';
+    launcher.style.transformOrigin = 'top right';
     launcher.style.boxSizing = 'border-box';
-    launcher.style.width = (34 * size.unit) + 'px';
-    launcher.style.fontSize = (12 * size.unit) + 'px';
-    launcher.style.padding = (8 * size.unit) + 'px ' + (5 * size.unit) + 'px';
-    launcher.style.letterSpacing = (2 * size.unit) + 'px';
+    launcher.style.width = '34px';
+    launcher.style.fontSize = '12px';
+    launcher.style.padding = '8px 5px';
+    launcher.style.letterSpacing = '2px';
     launcher.style.right = size.right + 'px';
-    launcher.style.height = size.height + 'px';
-    launcher.style.minHeight = size.height + 'px';
-    launcher.style.maxHeight = size.height + 'px';
+    launcher.style.height = (size.height / size.unit) + 'px';
+    launcher.style.minHeight = (size.height / size.unit) + 'px';
+    launcher.style.maxHeight = (size.height / size.unit) + 'px';
     launcher.style.top = top + 'px';
     launcher.style.bottom = 'auto';
     launcher.style.touchAction = 'none';
@@ -966,27 +1103,10 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
 }
 
   const launcherPlacement = createAndroidLauncherPosition(shadow, LAUNCHER_KEY, 3);
-  function resizeTouchPanel() {
-    const view=window.visualViewport;
-    const touch=navigator.maxTouchPoints>0 || /Android/i.test(navigator.userAgent);
-    const scale=touch && view ? Math.max(1,1/view.scale) : 1;
-    const width=view?.width || innerWidth, height=view?.height || innerHeight;
-    host.style.setProperty('--qc-ui-scale',String(scale));
-    host.style.setProperty('--qc-panel-width',Math.max(120,Math.min(390,width/scale-24))+'px');
-    host.style.setProperty('--qc-panel-height',Math.max(160,height/scale-24)+'px');
-    host.style.setProperty('--qc-ui-top',((view?.offsetTop || 0)+12*scale)+'px');
-    host.style.setProperty('--qc-ui-right',(Math.max(0,innerWidth-((view?.offsetLeft || 0)+width))+12*scale)+'px');
-  }
-  resizeTouchPanel();
-  window.addEventListener('resize',resizeTouchPanel);
-  window.visualViewport?.addEventListener('resize',resizeTouchPanel);
-  window.visualViewport?.addEventListener('scroll',resizeTouchPanel);
-
-
     const css = `<style>
       :host{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;color:#243047}*{box-sizing:border-box}button,input,select{font:inherit}button{cursor:pointer}button:disabled{opacity:.48;cursor:not-allowed}
       .launcher{transform:scale(var(--qc-ui-scale,1));transform-origin:right center;pointer-events:auto;position:fixed;right:0;width:35px;min-height:122px;writing-mode:vertical-rl;letter-spacing:2px;background:#087bfa;color:white;border:1px solid #a7caff;border-right:0;border-radius:13px 0 0 13px;padding:10px 7px;box-shadow:0 8px 24px #064d9d40;font-size:12px;font-weight:700;cursor:grab;touch-action:none;user-select:none}
-      .panel{pointer-events:auto;position:fixed;right:var(--qc-ui-right,12px);top:var(--qc-ui-top,12px);width:var(--qc-panel-width,390px);height:var(--qc-panel-height,calc(100vh - 24px));transform:scale(var(--qc-ui-scale,1));transform-origin:top right;display:flex;flex-direction:column;overflow:hidden;background:#f7f9fc;border:1px solid #dce4ee;border-radius:20px;box-shadow:0 18px 48px #23395233;font-size:13px;line-height:1.5}
+      .panel{pointer-events:auto;position:fixed;right:var(--qc-panel-right,12px);top:var(--qc-panel-top,12px);width:var(--qc-panel-width,390px);height:var(--qc-panel-height,calc(100vh - 24px));transform:scale(var(--qc-panel-scale,1));transform-origin:top right;display:flex;flex-direction:column;overflow:hidden;background:#f7f9fc;border:1px solid #dce4ee;border-radius:20px;box-shadow:0 18px 48px #23395233;font-size:13px;line-height:1.5}
       .head{flex:none;display:flex;align-items:center;justify-content:space-between;min-height:63px;padding:12px 16px;background:white;border-bottom:1px solid #e5eaf2}.head strong{font-size:15px}.head strong:before{content:"";display:inline-block;width:9px;height:9px;margin-right:9px;border-radius:50%;background:#087bfa;box-shadow:0 0 0 4px #e8f2ff}.head small{display:block;margin:3px 0 0 18px;color:#8a95a7;font-size:11px}.head button{width:40px;height:40px;flex:none;border:0;border-radius:50%;background:#eff2f6;color:#607082;font-size:20px}
       .body{min-height:0;flex:1;overflow:auto;padding:14px 15px 18px;scrollbar-width:thin}.card{background:white;border:1px solid #e4eaf2;border-radius:14px;padding:12px;margin-bottom:12px;box-shadow:0 1px 4px #25344c08;overflow-wrap:anywhere}.eyebrow{font-size:12px;font-weight:700;color:#657387;margin-bottom:8px}.title{font-weight:700}.muted,.hint{color:#738196;font-size:11px;line-height:1.55}.hint{margin-top:8px}.warn{color:#ad5714}.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.field{display:block;margin:5px 0;color:#526177;font-size:12px}.field input,.field select{font-size:16px;display:block;width:100%;min-height:44px;margin-top:5px;padding:8px 10px;border:1px solid #d4deea;border-radius:10px;background:white;color:#243047}.field input:focus,.field select:focus{outline:none;border-color:#087bfa;box-shadow:0 0 0 3px #087bfa20}.row{display:flex;gap:8px;margin-top:10px}.btn{min-height:44px;touch-action:manipulation;flex:1;padding:9px 10px;border:1px solid #cbdfff;border-radius:10px;background:white;color:#086bd6;font-weight:700}.btn.primary{background:#087bfa;border-color:#087bfa;color:white}.btn.stop{flex:0 0 54px;color:#c93934;border-color:#ffd8d4}.status{padding:10px;border:1px solid #dcecff;border-radius:10px;background:#eaf4ff;color:#1459af;font-weight:700}.item{padding:8px 0;border-bottom:1px solid #edf0f4;font-size:11px}.item:last-child{border-bottom:0}.item b{display:block;font-size:12px}.pill{display:inline-block;margin:3px 5px 0 0;padding:2px 6px;border-radius:5px;background:#eef5ff;color:#2867b5}.check{min-height:36px;cursor:pointer;display:flex;align-items:flex-start;gap:7px;margin-top:10px;color:#9b4c17;font-size:11px}.check input{margin-top:2px}.log{height:105px;overflow:auto;border-radius:10px;background:#172236;color:#dceaff;padding:9px;white-space:pre-wrap;font:11px/1.5 Consolas,monospace}.report{max-height:150px;overflow:auto;white-space:pre-wrap;border:1px solid #e2e8ef;border-radius:10px;padding:9px;font:11px/1.5 Consolas,monospace}
     </style>`;
@@ -1015,14 +1135,15 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
         action === 'live-budget' ? 'ROI \u8fbe\u6807\u540e\uff0c\u8c03\u63a7\u4e2d\u4efb\u52a1\u6309\u9884\u7b97\u4e0e\u6d88\u8017\u7684\u5dee\u503c\u9608\u503c\u7b5b\u9009\u3002\u5df2\u6682\u505c\u4e14\u63d0\u793a\u201c\u4efb\u52a1\u9884\u7b97\u4e0d\u8db3\u201d\u7684\u4efb\u52a1\uff0c\u53ea\u6709\u6d88\u8017\u8fbe\u5230\u5f53\u524d\u9884\u7b97\u624d\u4f1a\u8ffd\u52a0\u3002' :
         action === 'product-delete' ? '只填一个 ROI 阈值，按页面实际显示的综合营销 ROI / 支付 ROI 判断；两列都显示时共用该阈值，任一列为“—”或低于阈值即符合条件，不相加、不取平均。仍要求综合成本和消耗都大于 0；未显示的列不参与判断。升级时旧阈值不一致会留空，请重新填写。' : '';
       const targets = p?.targets || [];
+      const paused = !!checkpoint();
       const missingProductRoi = p?.kind === 'product' ? ['\u8c03\u63a7\u7efc\u5408\u8425\u9500ROI', '\u8c03\u63a7\u652f\u4ed8ROI']
         .filter(label => !p.roiLabels.includes(label)) : [];
       const previewItems = targets.slice(0, 100).map(x => `<div class="item"><b>${esc(x.name || x.id)}</b><span class="pill">ID ${esc(x.id)}</span>${p.params.action === 'product-delete' ? `<span class="pill">\u8c03\u63a7\u7efc\u5408\u8425\u9500ROI ${Number.isFinite(x.marketingRoi) ? esc(x.marketingRoi) : x.marketingRoiDash ? '\u2014' : '\u4e0d\u53ef\u7528'}</span><span class="pill">\u8c03\u63a7\u652f\u4ed8ROI ${Number.isFinite(x.paymentRoi) ? esc(x.paymentRoi) : x.paymentRoiDash ? '\u2014' : '\u4e0d\u53ef\u7528'}</span><span class="pill">\u7efc\u5408\u6210\u672c ${yuan(x.comprehensiveCost)} \u5143</span><span class="pill">\u8c03\u63a7\u6d88\u8017 ${yuan(x.spend)} \u5143</span>` : `<span class="pill">ROI ${esc(x.roi)}</span>`}${Number.isInteger(x.budget) ? `<span class="pill">\u9884\u7b97 ${yuan(x.budget)}</span><span class="pill">\u6d88\u8017 ${yuan(x.spend)}</span>` : ''}${p.params.action === 'live-budget' ? `<span class="pill">\u62df\u6539\u4e3a ${yuan(x.budget + p.params.add)}</span>` : ''}</div>`).join('');
       shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${state.open ? 'none' : 'block'};top:${esc(state.launcherTop)}%" title="\u70b9\u51fb\u5c55\u5f00\uff0c\u62d6\u52a8\u8c03\u6574\u4f4d\u7f6e">\u8c03\u63a7\u52a9\u624b</button>
-        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>\u5343\u5ddd\u8c03\u63a7\u52a9\u624b</strong><small>v0.1.19 \u5b89\u5353\u7248 \u00b7 \u5148\u68c0\u67e5\u672c\u9875\u518d\u6267\u884c</small></div><button id="minimize" title="\u6700\u5c0f\u5316">\u2212</button></div><div class="body">
+        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>\u5343\u5ddd\u8c03\u63a7\u52a9\u624b</strong><small>v0.1.21 \u5b89\u5353\u7248 \u00b7 \u5148\u68c0\u67e5\u672c\u9875\u518d\u6267\u884c</small></div><button id="minimize" title="\u6700\u5c0f\u5316">\u2212</button></div><div class="body">
         <div class="card"><div class="eyebrow">\u9501\u5b9a\u5f53\u524d\u8ba1\u5212</div><div class="title">${esc(lock?.planName || '\u5c1a\u672a\u9501\u5b9a')}</div><div class="muted">\u8d26\u6237 ${esc(lock?.accountId || '\u2014')} \u00b7 \u8ba1\u5212 ${esc(lock?.planId || '\u2014')} \u00b7 ${lock?.kind === 'live' ? '\u63a8\u76f4\u64ad' : lock?.kind === 'product' ? '\u63a8\u5546\u54c1' : '\u672a\u8bc6\u522b'}</div>${needsRelock ? '<div class="hint warn">\u5f53\u524d\u9875\u9762\u4e0e\u5df2\u9501\u5b9a\u8ba1\u5212\u4e0d\u540c\uff0c\u8bf7\u91cd\u65b0\u9501\u5b9a\u5f53\u524d\u8ba1\u5212\u3002</div>' : ''}<div class="row"><button id="lock" class="btn" ${state.busy ? 'disabled' : ''}>\u9501\u5b9a\u5f53\u524d\u8ba1\u5212</button></div></div>
         <div class="card"><div class="eyebrow">\u7b5b\u9009\u6761\u4ef6</div><label class="field">\u672c\u6b21\u64cd\u4f5c<select id="action" ${fieldDisabled}><option value="">\u8bf7\u9009\u62e9</option>${choices}</select></label>${conditionFields}<div class="hint">锁定商品计划时自动选择低 ROI 删除；名单内预填 ROI，名单外留空。可手动修改；重新锁定或重新选择直播低 ROI 删除会恢复默认值。</div>${conditionHint ? `<div class="hint">${conditionHint}</div>` : ''}</div>
-        <div class="card"><div class="eyebrow">\u6267\u884c\u672c\u9875</div><div class="hint warn">\u5148\u68c0\u67e5\u5e76\u6838\u5bf9\u4efb\u52a1\u6e05\u5355\uff0c\u518d\u70b9\u51fb\u6267\u884c\u3002\u76f4\u64ad\u5220\u9664\u4ec5\u52fe\u9009\u672c\u9875\u5408\u683c\u4efb\u52a1\u5e76\u6279\u91cf\u5220\u9664\uff1b\u5546\u54c1\u5220\u9664\u9010\u6761\u6267\u884c\uff1b\u9884\u7b97\u9010\u6761\u6539\u4e3a\u5f53\u524d\u503c\u52a0\u8bbe\u5b9a\u91d1\u989d\u3002\u53ef\u5148\u5728\u5343\u5ddd\u9009 100 \u6761/\u9875\uff1b\u8de8\u9875\u8bf7\u9010\u9875\u68c0\u67e5\u3002\u5220\u9664\u540e\u4e0d\u53ef\u6062\u590d\u3002</div><div class="row"><button id="preview" class="btn" ${state.busy || !lock ? 'disabled' : ''}>\u68c0\u67e5\u672c\u9875</button><button id="execute" class="btn primary" ${state.busy || !p?.targets.length ? 'disabled' : ''}>\u6267\u884c\u672c\u9875 ${targets.length} \u6761</button><button id="stop" class="btn stop" ${state.busy ? '' : 'disabled'}>\u505c\u6b62</button></div>${p?.targets.length ? '<label class="check"><input id="ack" type="checkbox">\u6211\u5df2\u6838\u5bf9\u4e0b\u65b9\u4efb\u52a1 ID\u3001ROI \u548c\u91d1\u989d\uff0c\u786e\u8ba4\u6267\u884c\u672c\u9875\u64cd\u4f5c</label>' : ''}</div>
+        <div class="card"><div class="eyebrow">\u6267\u884c\u672c\u9875</div><div class="hint warn">\u5148\u68c0\u67e5\u5e76\u6838\u5bf9\u4efb\u52a1\u6e05\u5355\uff0c\u518d\u70b9\u51fb\u6267\u884c\u3002\u76f4\u64ad\u5220\u9664\u4ec5\u52fe\u9009\u672c\u9875\u5408\u683c\u4efb\u52a1\u5e76\u6279\u91cf\u5220\u9664\uff1b\u5546\u54c1\u5220\u9664\u9010\u6761\u6267\u884c\uff1b\u9884\u7b97\u9010\u6761\u6539\u4e3a\u5f53\u524d\u503c\u52a0\u8bbe\u5b9a\u91d1\u989d\u3002\u53ef\u5148\u5728\u5343\u5ddd\u9009 100 \u6761/\u9875\uff1b\u8de8\u9875\u8bf7\u9010\u9875\u68c0\u67e5\u3002\u5220\u9664\u540e\u4e0d\u53ef\u6062\u590d\u3002</div><div class="row"><button id="preview" class="btn" ${state.busy || !lock ? 'disabled' : ''}>\u68c0\u67e5\u672c\u9875</button><button id="execute" class="btn primary" ${state.busy || paused || !p?.targets.length ? 'disabled' : ''}>\u6267\u884c\u672c\u9875 ${targets.length} \u6761</button><button id="stop" class="btn stop" ${state.busy ? '' : 'disabled'}>\u505c\u6b62</button></div>${paused ? '<div class="row"><button id="resume" class="btn primary" '+ (state.busy ? 'disabled' : '') +'>继续本轮</button><button id="close-run" class="btn" '+ (state.busy ? 'disabled' : '') +'>结束本轮</button></div>' : ''}${p?.targets.length ? '<label class="check"><input id="ack" type="checkbox">\u6211\u5df2\u6838\u5bf9\u4e0b\u65b9\u4efb\u52a1 ID\u3001ROI \u548c\u91d1\u989d\uff0c\u786e\u8ba4\u6267\u884c\u672c\u9875\u64cd\u4f5c</label>' : ''}</div>
         <div class="card"><div class="eyebrow">\u6267\u884c\u72b6\u6001</div><div class="status">${esc(state.phase)}</div>${p ? `<div class="hint">\u7b2c ${esc(p.page)} \u9875 \u00b7 ${esc(p.size || '\u5f53\u524d\u6761\u6570')} \u00b7 ROI \u5217\uff1a${esc(p.roiLabels.join('\u3001'))} \u00b7 \u9884\u89c8\u4e8e ${new Date(p.at).toLocaleTimeString('zh-CN', { hour12: false })}</div>${missingProductRoi.length ? `<div class="hint warn">\u5f53\u524d\u8868\u683c\u672a\u663e\u793a\uff1a${esc(missingProductRoi.join('\u3001'))}\uff1b\u8fd9\u4e9b\u6307\u6807\u4e0d\u53c2\u4e0e\u5224\u5b9a\u3002</div>` : ''}<div style="max-height:240px;overflow:auto;margin-top:8px">${previewItems || '<div class="muted">\u672c\u9875\u6ca1\u6709\u7b26\u5408\u6761\u4ef6\u7684\u4efb\u52a1</div>'}</div>` : '<div class="hint">\u5c1a\u672a\u751f\u6210\u672c\u9875\u9884\u89c8</div>'}</div>
         <div class="card"><div class="eyebrow">\u6267\u884c\u8bb0\u5f55</div><div class="log">${esc(state.logs.join('\n') || '\u5c1a\u65e0\u8bb0\u5f55')}</div></div><div class="card"><div class="eyebrow">\u7ed3\u679c\u62a5\u544a</div><div class="report">${esc(state.report || '\u6267\u884c\u540e\u751f\u6210\u62a5\u544a')}</div><div class="row"><button id="copy" class="btn">\u590d\u5236\u62a5\u544a</button></div></div></div></div>`;
       const actionInput = shadow.getElementById('action');
@@ -1042,6 +1163,10 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
         if (!shadow.getElementById('ack')?.checked) { phase('\u8bf7\u5148\u6838\u5bf9\u5e76\u52fe\u9009\u786e\u8ba4\u672c\u9875\u6e05\u5355'); return; }
         executePage();
       };
+      const resume = shadow.getElementById('resume');
+      if (resume) resume.onclick = () => executePage(true);
+      const closeRun = shadow.getElementById('close-run');
+      if (closeRun) closeRun.onclick = closePausedRun;
       shadow.getElementById('stop').onclick = () => { state.stop = true; phase('\u5df2\u8bf7\u6c42\u505c\u6b62\uff1b\u5f53\u524d\u672a\u5b8c\u6210\u7684\u64cd\u4f5c\u4f1a\u6682\u505c'); };
       shadow.getElementById('copy').onclick = () => { if (state.report) GM_setClipboard(state.report); };
           launcherPlacement.bind(shadow.getElementById('launch'), () => { state.open = true; render(); });

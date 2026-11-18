@@ -6,10 +6,10 @@
 
 | 千川助手 | Windows | 安卓 |
 | --- | --- | --- |
-| 直播定时调速 | [v1.2.9](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js) | [v1.2.12](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js) |
-| 调控 | [v0.1.15](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js) | [v0.1.20](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js) |
-| 素材追投 | [v0.4.39](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js) | [v0.4.41](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js) |
-| 零消耗素材清理 | [v1.1.7](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-windows.user.js) | [v1.1.9](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-android.user.js) |
+| 直播定时调速 | [v1.2.10](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js) | [v1.2.14](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js) |
+| 调控 | [v0.1.16](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js) | [v0.1.21](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js) |
+| 素材追投 | [v0.4.40](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js) | [v0.4.42](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js) |
+| 零消耗素材清理 | [v1.1.8](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-windows.user.js) | [v1.1.10](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-android.user.js) |
 
 | 视频号助手 | 安装与订阅 |
 | --- | --- |
@@ -20,7 +20,11 @@
 
 素材追投助手默认将直播计划的性别定向设为「女」。直播定时调速助手默认单次预算 200 元、调控时长 2 小时、续投间隔 2 小时、计划当日上限 1600 元；旧配置中的非空自定义值继续保留。
 
-本次默认参数更新：素材追投 Windows `v0.4.38` / 安卓 `v0.4.40`；直播定时调速 Windows `v1.2.9` / 安卓 `v1.2.12`。定时调速会为旧配置中的空参数补上新默认值，并继续兼容旧版以分钟保存的续投间隔。
+安卓四个千川助手的面板和侧边入口会抵消网页双指缩放；横屏和竖屏各自保留拖动位置。窄屏或键盘弹出时，面板会收窄或缩短以留在可见区域。
+
+素材追投在 Windows 和安卓的计划锁定后，默认每轮最多 20 组。计划 `1832800495529143` 默认每组 1 条，计划 `1840851764337800` 默认每组 2 条，适用于 ROI 和日期模式。其他计划沿用原每组条数，预填值仍可手改。
+
+素材追投、调控、零消耗素材清理异常暂停后，回原计划并点「继续本轮」。进度保留在原浏览器标签页，刷新后可重新锁定原计划再续跑，不在设备之间同步。追投沿用已提交组数及素材 ID；调控只处理原已确认清单中尚未完成且依然符合条件的任务；清理沿用原页、累计删除额度和 AIGC 逐条排查进度。提交结果不明时，先读平台结果：追投用「只重新核查未核清任务」，调控或清理须回原列表核实预算、删除或标签结果。没有可核实的结果时会暂停。
 
 主页带货发布助手默认收起，点击页面右侧的「发布助手」即可展开。上传和商品动态选择器需要按页面校准，首次运行可使用默认的试跑模式。逐单加热助手由用户手动完成每一单的支付。
 
@@ -56,7 +60,7 @@ Windows `v0.1.15` / 安卓 `v0.1.20` 起，直播任务因「任务预算不足�
 
 Windows `v0.1.12` / 安卓 `v0.1.17` 的商品调控只需输入一个「调控 ROI 阈值」：自动按当前任务表显示的「调控综合营销ROI」或「调控支付ROI」判定；两列都显示时共用此阈值，保留原来任一已显示列低于阈值或为「—」即入选的规则，不相加、不取平均。未显示列不参与判断，综合成本和调控消耗必须均大于零；仍需先检查清单，再确认执行。
 
-旧版两项阈值相同或只保存一项时自动继承；两项不同则留空，必须重新填写，避免擅自改变删除门槛。直播删除和追加预算的独立设置不变。没有对真实广告任务执行删除或追加预算。
+旧版两项阈值相同或只保存一项时自动继承；两项不同则留空，必须重新填写，避免擅自改变删除门槛。直播和商品的低 ROI 删除都保留调控消耗为 0 或无法确认消耗的任务；商品删除还要求综合成本大于 0。直播删除仍按调控支付 ROI 阈值筛选调控中任务，追加预算规则不变。
 
 ## 本地验证
 

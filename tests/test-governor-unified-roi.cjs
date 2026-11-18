@@ -22,7 +22,9 @@ for (const platform of ['windows','android']) {
     const {api} = load(platform,{liveDeleteRoi:'2',liveBudgetRoi:'3',gap:'5',add:'20'},'');
     api.setAction('live-delete');
     assert.equal(api.settings().roi,2);
-    assert.equal(api.eligible({roi:1,status:'调控中'},api.settings()),true);
+    assert.equal(api.eligible({roi:1,status:'调控中',spend:10},api.settings()),true);
+    assert.equal(api.eligible({roi:1,status:'调控中',spend:0},api.settings()),false);
+    assert.equal(api.eligible({roi:1,status:'调控中',spend:NaN},api.settings()),false);
     api.setAction('live-budget');
     const p = api.settings();
     assert.equal(p.roi,3); assert.equal(p.gap,500); assert.equal(p.add,2000);

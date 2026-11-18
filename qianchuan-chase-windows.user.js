@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巨量千川素材追投助手（安全锁定版）
 // @namespace    local.qianchuan.chase
-// @version      0.4.39
+// @version      0.4.40
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js
 // @description  商品日期追投可设最终尾组最低数量；直播日期允许未审核素材；整组复核补选；提交失败限重试一次
@@ -43,7 +43,7 @@
       planName: '',
       budget: 100,
       hours: 24,
-      maxGroups: 10,
+      maxGroups: 20,
       roiGroupSize: 10,
       dateGroupSize: 20,
       roiThreshold: 1,
@@ -316,6 +316,11 @@
       planName: planName, planKind: livePlan ? 'live' : 'product' };
   }
 
+  function chasePlanDefaults(planId) {
+    const size = planId === '1832800495529143' ? 1 : planId === '1840851764337800' ? 2 : 0;
+    return { maxGroups: 20, roiGroupSize: size || 10, dateGroupSize: size || 20, tailMin: size || 5 };
+  }
+
   async function captureCurrent() {
     try {
       if (state.busy) throw new Error('执行过程中不能切换计划');
@@ -332,9 +337,7 @@
         state.config.mode = 'roi';
         state.config.budget = 100;
         state.config.hours = 24;
-        state.config.maxGroups = 10;
-        state.config.roiGroupSize = 10;
-        state.config.dateGroupSize = 20;
+        Object.assign(state.config, chasePlanDefaults(current.planId));
         state.config.roiThreshold = current.planKind === 'live' ? 2 : 1;
         state.config.roiStrategy = 'strict';
         state.config.startDate = '';
@@ -345,7 +348,6 @@
         state.config.liveGoal = '直播间成交';
         state.config.liveRoiTarget = '';
         state.config.liveGender = '女';
-        state.config.tailMin = 5;
       }
       state.currentRun = null;
       state.report = '';
@@ -905,6 +907,7 @@
       throw new Error('点击前素材页或勾选状态已改变：' + id);
     }
     var wanted = shouldCheck ? expectedIds.concat(id) : expectedIds.filter(function (value) { return value !== id; });
+    if (shouldCheck) rememberChasePage(page, wanted);
     before.target.click();
     var observed = '';
     try {
@@ -1252,8 +1255,10 @@
       liveGoal: cfg.planKind === 'live' ? cfg.liveGoal : null,
       liveGender: cfg.planKind === 'live' ? cfg.liveGender : null,
       page: pageNumber(drawer),
-      status: 'submitting',
-      submitAttempts: 1,
+      status: 'prepared',
+      submitAttempts: 0,
+      roiBoundary: cfg.mode === 'roi' && cfg.roiStrategy === 'whole_group' &&
+        items.some(item => item.roi === null || item.roi < cfg.roiThreshold),
       createdAt: new Date().toISOString(),
       taskId: ''
     };
@@ -1308,6 +1313,9 @@
       try {
         await safeClick(submit, '追投弹窗提交', false, function () {
           if (!formReady(submit)) throw new Error('提交前弹窗参数或按钮已变化');
+          record.status = 'submitting';
+          record.submitAttempts = 1;
+          saveJournal();
           clicked = true;
         });
       } catch (clickError) {
@@ -1321,6 +1329,9 @@
         addLog('提交按钮在点击前变化；已复核参数且首次未点击，重试点击一次');
         await safeClick(freshSubmit, '追投弹窗提交', false, function () {
           if (!formReady(freshSubmit)) throw new Error('重试前弹窗参数或按钮已变化');
+          record.status = 'submitting';
+          record.submitAttempts = 1;
+          saveJournal();
           clicked = true;
         });
       }
@@ -1561,6 +1572,7 @@
       if (++pageSteps > 300) throw new Error('超过300次直播素材页扫描，已停止');
       var bundle = await waitForLiveStatusPage();
       var page = pageNumber(bundle.drawer);
+      rememberChasePage(page);
       if (bundle.rows.length > 100) throw new Error('当前直播素材页超过100条');
       if (selectedCount(bundle.drawer) !== 0) throw new Error('当前页存在未清除的勾选，禁止继续');
       var pageIds = bundle.rows.map(function (item) { return item.id; });
@@ -1732,7 +1744,7 @@
   async function runRoiStrict() {
     var cfg = state.config;
     var selected = [];
-    var handled = new Set();
+    var handled = consumedChaseIds(state.currentRun);
     var reason = '';
     var steps = 0;
     while (state.currentRun.groups.length < cfg.maxGroups) {
@@ -1740,6 +1752,7 @@
       if (state.stopRequested) throw new Error(state.stopMessage);
       if (++steps > 300) throw new Error('超过300次素材页扫描，已停止');
       var bundle = await waitForProductRowsReady();
+      rememberChasePage(pageNumber(bundle.drawer));
       if (bundle.rows.length > roiPageSize()) throw new Error('当前页素材数超过每页设置');
       if (selectedCount(bundle.drawer) !== selected.length) throw new Error('跨页选中数量未保留，禁止继续');
       var candidates = bundle.rows.filter(function (item) { return !handled.has(item.id); });
@@ -1795,7 +1808,7 @@
   async function runRoiWholeGroup() {
     var cfg = state.config;
     var selected = [];
-    var handled = new Set();
+    var handled = consumedChaseIds(state.currentRun);
     var stopAfterGroup = false;
     var pausedForDash = false;
     var reason = '';
@@ -1805,6 +1818,7 @@
       if (state.stopRequested) throw new Error(state.stopMessage);
       if (++steps > 300) throw new Error('超过300次素材页扫描，已停止');
       var bundle = await waitForProductRowsReady();
+      rememberChasePage(pageNumber(bundle.drawer));
       if (bundle.rows.length > roiPageSize()) throw new Error('当前页素材数超过每页设置');
       if (selectedCount(bundle.drawer) !== selected.length) throw new Error('跨页选中数量未保留，禁止继续');
       var candidates = bundle.rows.filter(function (item) { return !handled.has(item.id) && eligibleForChase(item); });
@@ -1875,7 +1889,7 @@
     if (state.config.planKind === 'live') return runLivePages();
     var cfg = state.config;
     var selected = [];
-    var handled = new Set();
+    var handled = consumedChaseIds(state.currentRun);
     var reason = '';
     var pageSteps = 0;
     while (state.currentRun.groups.length < cfg.maxGroups) {
@@ -1883,6 +1897,7 @@
       if (state.stopRequested) throw new Error(state.stopMessage);
       if (++pageSteps > 300) throw new Error('超过300次素材页扫描，已停止');
       var bundle = await waitForProductRowsReady();
+      rememberChasePage(pageNumber(bundle.drawer));
       if (bundle.rows.length > 20) throw new Error('当前页超过20条');
       if (selectedCount(bundle.drawer) !== selected.length) {
         throw new Error('跨页选中数量未保留，禁止继续');
@@ -2397,10 +2412,20 @@
       state.config.planId = current.planId;
       state.config.planName = current.planName;
       state.config.planKind = current.planKind;
-      var run = pending[pending.length - 1];
+      const point = chaseCheckpoint(state.config);
+      const run = pending.find(item => item.id === point?.runId) || pending[pending.length - 1];
       state.currentRun = run;
       setPhase('只重新核查调控任务，不提交素材');
+      run.verifyIncomplete = false;
       var allGood = await verifyTasks(false);
+      if (!run.verifyIncomplete) {
+        run.groups.forEach(group => {
+          if (group.status === 'verified' && !group.uiSuccess) {
+            group.uiSuccess = true;
+            group.recovered = true;
+          }
+        });
+      }
       run.verifyDeferred = false;
       run.status = allGood ? 'verified' : 'needs_review';
       saveJournal();
@@ -2570,9 +2595,78 @@
     }
   }
 
-  async function start() {
+  const CHASE_CONTINUE_PREFIX = 'qc-chase-continue-v1-';
+
+  function chaseContinueKey(cfg) {
+    return cfg.accountId && cfg.planId ? CHASE_CONTINUE_PREFIX + cfg.accountId + ':' + cfg.planId : '';
+  }
+
+  function chaseCheckpoint(cfg = state.config) {
+    try { return JSON.parse(sessionStorage.getItem(chaseContinueKey(cfg)) || 'null'); }
+    catch (_) { return null; }
+  }
+
+  function setChaseCheckpoint(cfg, value) {
+    const key = chaseContinueKey(cfg);
+    if (value) sessionStorage.setItem(key, JSON.stringify(value));
+    else sessionStorage.removeItem(key);
+  }
+
+  function rememberChasePage(page, wanted) {
+    const point = chaseCheckpoint();
+    if (!point || point.runId !== state.currentRun?.id) throw new Error('本轮进度未能读取，禁止提交');
+    if (!wanted && page === point.page) return;
+    setChaseCheckpoint(state.config, {...point, page, selected: wanted || []});
+  }
+
+  function consumedChaseIds(run) {
+    return new Set(run.groups.filter(g => g.uiSuccess).flatMap(g => [...g.ids, ...(g.platformSkippedIds || [])]));
+  }
+
+  async function clearChaseResumeSelection(checkpoint, drawer) {
+    if (!selectedCount(drawer)) return;
+    const page = pageNumber(drawer), selection = materialSelection(drawer);
+    if (page !== checkpoint.page || selection.count !== selection.ids.length ||
+        selection.ids.some(id => !checkpoint.selected.includes(id))) {
+      throw new Error('页面存在无法确认来源的勾选，请先手动取消勾选');
+    }
+    await clearAttemptSelection(checkpoint.selected, page);
+  }
+
+  async function restoreChasePage(target) {
+    let drawer = context('creative').drawer;
+    const current = pageNumber(drawer);
+    if (current > target) {
+      const footer = unique(drawer.querySelectorAll('.main-vmok-plugin-oc-pagination-wrapper'), '素材分页栏');
+      const first = unique(Array.from(footer.querySelectorAll('li.main-vmok-plugin-page-turner__item'))
+        .filter(el => exactText(el) === '1'), '素材第 1 页');
+      await safeClick(first, '返回素材第 1 页');
+      await waitFor(() => pageNumber(context('creative').drawer) === 1, '返回素材第 1 页', 10000);
+    }
+    while (pageNumber(context('creative').drawer) < target) {
+      if (!await nextPage()) throw new Error('无法返回本轮中断的第 ' + target + ' 页');
+    }
+  }
+
+  function closePausedRun() {
     if (state.busy) return;
-    try { readFormSnapshot(); } catch (error) { setPhase('开始前检查失败：' + error.message); return; }
+    const point = chaseCheckpoint();
+    if (!point) return;
+    try {
+      context(null);
+      const run = journal.runs.find(item => item.id === point.runId);
+      if (!run || run.groups.some(group => !group.uiSuccess && group.status !== 'prepared')) {
+        throw new Error('上次提交尚未核实，请先重新核查任务');
+      }
+      if (!window.confirm('结束本轮？已提交的追投任务会保留。')) return;
+      setChaseCheckpoint(state.config, null);
+      setPhase('已结束本轮，可以重新设置追投参数');
+    } catch (error) { setPhase(error.message); }
+  }
+
+  async function start(manualResume = false) {
+    if (state.busy) return;
+    try { if (manualResume !== true) readFormSnapshot(); } catch (error) { setPhase('开始前检查失败：' + error.message); return; }
     state.busy = true;
     state.stopRequested = false;
     state.stopMessage = '用户已请求停止';
@@ -2590,10 +2684,36 @@
     render();
     try {
       await dismissKnownPromo();
-      validateConfig();
-      if (selectedCount(context('creative').drawer) !== 0) {
-        throw new Error('页面已有勾选素材，请先手动取消后再开始追投');
+      const point = chaseCheckpoint();
+      if (manualResume === true) {
+        const current = context('creative');
+        if (!point || point.config.planKind !== current.planKind || point.config.planName !== current.planName ||
+            point.config.accountName !== current.accountName ||
+            point.dateRange !== new URL(location.href).searchParams.get('dateRange')) {
+          throw new Error('请回到本轮原账户、计划、素材页和数据日期后继续');
+        }
+        const saved = journal.runs.find(item => item.id === point.runId &&
+          item.accountId === current.accountId && item.planId === current.planId);
+        if (!saved) throw new Error('本轮提交日志已缺失，无法安全继续');
+        saved.groups = saved.groups.filter(group => group.status !== 'prepared');
+        if (saved.groups.some(group => !group.uiSuccess || ['possible_duplicate', 'mismatch'].includes(group.status))) {
+          throw new Error('本轮有提交结果未核实；请先点「只重新核查未核清任务」，核查通过后回素材页继续');
+        }
+        if (Array.from(document.querySelectorAll('.assist-task-modal')).some(visible)) {
+          throw new Error('请先关闭千川追投弹窗，再继续本轮');
+        }
+        state.config = {...point.config};
+        state.logs = (saved.logs || []).slice(-60);
+        validateConfig();
+        await clearChaseResumeSelection(point, current.drawer);
+        state.resumeRun = saved;
+        saved.status = 'running';
+      } else if (point && !state.resumeRun) {
+        throw new Error('本轮尚未结束，请使用「继续本轮」');
       }
+      validateConfig();
+      const materialDrawer = context('creative').drawer;
+      if (selectedCount(materialDrawer) !== 0) throw new Error('页面已有勾选素材，请先取消后再继续');
       var cfg = state.config;
       var run = state.resumeRun || {
         id: 'run-' + Date.now(),
@@ -2629,22 +2749,31 @@
         state.resumeRun = null;
         addLog('刷新后恢复同一轮追投；已排除先前成功的' +
           run.groups.reduce(function (sum, group) { return sum + group.count; }, 0) + '条素材');
+        run.executionError = false;
+        run.incomplete = false;
+        run.verifyDeferred = false;
       } else journal.runs.push(run);
       saveJournal();
+      if (!point) setChaseCheckpoint(cfg, {runId: run.id, config: {...cfg}, page: null, selected: [],
+        dateRange: new URL(location.href).searchParams.get('dateRange')});
       setPhase('设置素材筛选和排序');
       await ensureSourceFilter();
       await ensurePageSize(cfg.mode === 'roi' ? roiPageSize() : (cfg.planKind === 'live' ? 100 : 20));
       await ensureSort(cfg.mode === 'roi' ? '综合营销ROI' : '创建时间');
+      if (manualResume === true && point.page) await restoreChasePage(point.page);
       rowsNow();
       setPhase('逐页追投');
       try {
-        run.stopReason = cfg.mode === 'roi' ? await runRoi() : await runDate();
+        run.stopReason = run.groups.some(group => group.uiSuccess && group.roiBoundary) ?
+          '本轮已提交跨过 ROI 阈值的一组；只核查提交结果' :
+          (cfg.mode === 'roi' ? await runRoi() : await runDate());
       } catch (error) {
         if (refreshUnreadyLivePage(run, error)) return;
         run.executionError = true;
         run.stopReason = error.message;
         addLog('执行停止：' + error.message);
       }
+      if (!run.executionError && !run.incomplete) setChaseCheckpoint(cfg, null);
       if (run.executionError || run.incomplete) {
         run.status = 'needs_review';
         run.verifyDeferred = run.groups.length > 0;
@@ -2678,6 +2807,7 @@
     } finally {
       state.busy = false;
       state.viewportLock = null;
+      state.resumeRun = null;
       render();
       if (state.batchRunActive && !state.refreshing) advanceLiveBatch(state.currentRun);
     }
@@ -2731,7 +2861,7 @@
       '</style>',
       '<button class="launcher" id="launch" title="点击展开，拖动可调整位置" aria-label="展开千川追投助手" style="display:', state.open === false ? 'block' : 'none', ';top:', esc(state.launcherTop), '%">追投助手</button>',
       '<div class="panel" style="display:', state.open === false ? 'none' : 'flex', '">',
-      '<div class="head"><strong>千川素材追投助手 v0.4.39</strong><button id="close" title="最小化" aria-label="最小化助手">−</button></div>',
+      '<div class="head"><strong>千川素材追投助手 v0.4.40</strong><button id="close" title="最小化" aria-label="最小化助手">−</button></div>',
       '<div class="body">',
       '<div class="card"><div class="muted">锁定账户 / ', cfg.planKind === 'live' ? '推直播间计划' : '商品自选计划', '</div>',
       '<strong>', esc(cfg.accountName || '尚未锁定'), '</strong><br>',
@@ -2807,9 +2937,11 @@
       '<div class="small">正常追投结束后统一进入调控页核查；中途异常或手动停止时留在素材页，待手动核查，不自动重提。</div>',
       '<div class="hint">推商品翻页前先提交本页余量，再清空勾选并翻页；不足设定条数也会单独成组，预算仍按单组设置，并计入组数上限。</div>',
       '<div class="small warn">单计划追投仅操作当前锁定的计划。运行中不操作原计划预算、ROI 目标和投放状态。</div>',
-      '<div class="buttons"><button class="btn primary" id="start" ', state.busy ? 'disabled' : '', '>',
+      '<div class="buttons"><button class="btn primary" id="start" ', state.busy || chaseCheckpoint(cfg) ? 'disabled' : '', '>',
       '开始追投并提交', '</button>',
       '<button class="btn danger" id="stop" ', state.busy ? '' : 'disabled', '>停止</button></div>',
+      chaseCheckpoint(cfg) ? '<div class="buttons"><button class="btn primary" id="resume" ' + (state.busy ? 'disabled' : '') + '>继续本轮</button>' +
+        '<button class="btn" id="close-run" ' + (state.busy ? 'disabled' : '') + '>结束本轮</button></div>' : '',
       '<button class="btn" id="recheck" style="width:100%;margin-top:8px" ', state.busy ? 'disabled' : '', '>只重新核查未核清任务（不提交）</button>',
       '<div class="section">执行状态</div><div class="status">', esc(status), '</div>',
       '<div class="section">执行记录</div><div class="log">', logs || '暂无记录', '</div>',
@@ -2903,7 +3035,11 @@
     if (dash) dash.onchange = function () { cfg.dashPolicy = dash.value; };
     var strategy = shadow.getElementById('roi-strategy');
     if (strategy) strategy.onchange = function () { cfg.roiStrategy = strategy.value; render(); };
-    shadow.getElementById('start').onclick = start;
+    shadow.getElementById('start').onclick = () => start();
+    const resume = shadow.getElementById('resume');
+    if (resume) resume.onclick = () => start(true);
+    const closeRun = shadow.getElementById('close-run');
+    if (closeRun) closeRun.onclick = closePausedRun;
     shadow.getElementById('recheck').onclick = recheckPending;
     shadow.getElementById('stop').onclick = function () {
       state.stopRequested = true;

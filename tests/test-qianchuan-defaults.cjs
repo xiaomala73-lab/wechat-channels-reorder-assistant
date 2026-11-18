@@ -8,7 +8,7 @@ for (const platform of ['windows', 'android']) {
     const source = fs.readFileSync(`qianchuan-chase-${platform}.user.js`, 'utf8');
     const expected = platform === 'windows' ? "liveGender: '女'" : "liveGender: '\\u5973'";
     const reset = platform === 'windows' ? "state.config.liveGender = '女'" : "state.config.liveGender = '\\u5973'";
-    assert.match(source, new RegExp(`@version\\s+0\\.4\\.${platform === 'windows' ? '39' : '41'}\\b`));
+    assert.match(source, new RegExp(`@version\\s+0\\.4\\.${platform === 'windows' ? '40' : '42'}\\b`));
     assert.ok(source.includes(expected), 'initial gender targeting default should be female');
     assert.ok(source.includes(reset), 'changing plans should restore the female default');
   });
@@ -20,7 +20,7 @@ for (const platform of ['windows', 'android']) {
     assert.notEqual(start, -1);
     assert.notEqual(end, -1);
     const setup = source.slice(start, end);
-    const version = platform === 'windows' ? '1.2.10' : '1.2.13';
+    const version = platform === 'windows' ? '1.2.10' : '1.2.14';
     assert.match(source, new RegExp(`@version\\s+${version.replaceAll('.', '\\.')}\\b`));
 
     function load(saved) {

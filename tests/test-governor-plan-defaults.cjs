@@ -30,7 +30,7 @@ for(const platform of ['windows','android']){
    assert.deepEqual(JSON.parse(JSON.stringify(api.PLAN_ROI_DEFAULTS)),{product:products,live:lives});
    assert.deepEqual(JSON.parse(JSON.stringify(api.PLAN_LIVE_BUDGET_DEFAULTS)),liveBudget);
   for(const id of [...Object.keys(products),...Object.keys(lives)])assert.match(id,/^\d{16}$/);
-  const version=platform==='windows'?'0.1.15':'0.1.20';
+  const version=platform==='windows'?'0.1.16':'0.1.21';
   assert.match(source,new RegExp('@version\\s+'+version.replaceAll('.','\\.')));
   for(const key of ['updateURL','downloadURL']) {
    const line=source.split('\n').find(line=>line.startsWith('// @'+key+' '));

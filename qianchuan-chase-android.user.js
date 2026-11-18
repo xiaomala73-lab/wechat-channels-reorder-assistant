@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Material Chase Assistant (Android)
 // @namespace    local.qianchuan.chase
-// @version      0.4.41
+// @version      0.4.42
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js
 // @description  Android old/new material status headers; product/live eligibility, semantic tables and pagination compatibility.
@@ -43,7 +43,7 @@
       planName: '',
       budget: 100,
       hours: 24,
-      maxGroups: 10,
+      maxGroups: 20,
       roiGroupSize: 10,
       dateGroupSize: 20,
       roiThreshold: 1,
@@ -333,6 +333,11 @@
       planName: planName, planKind: livePlan ? 'live' : 'product' };
   }
 
+  function chasePlanDefaults(planId) {
+    const size = planId === '1832800495529143' ? 1 : planId === '1840851764337800' ? 2 : 0;
+    return { maxGroups: 20, roiGroupSize: size || 10, dateGroupSize: size || 20, tailMin: size || 5 };
+  }
+
   async function captureCurrent() {
     try {
       if (state.busy) throw new Error('\u6267\u884C\u8FC7\u7A0B\u4E2D\u4E0D\u80FD\u5207\u6362\u8BA1\u5212');
@@ -349,9 +354,7 @@
         state.config.mode = 'roi';
         state.config.budget = 100;
         state.config.hours = 24;
-        state.config.maxGroups = 10;
-        state.config.roiGroupSize = 10;
-        state.config.dateGroupSize = 20;
+        Object.assign(state.config, chasePlanDefaults(current.planId));
         state.config.roiThreshold = current.planKind === 'live' ? 2 : 1;
         state.config.roiStrategy = 'strict';
         state.config.startDate = '';
@@ -362,7 +365,6 @@
         state.config.liveGoal = '\u76F4\u64AD\u95F4\u6210\u4EA4';
         state.config.liveRoiTarget = '';
         state.config.liveGender = '\u5973';
-        state.config.tailMin = 5;
       }
       state.currentRun = null;
       state.report = '';
@@ -1033,6 +1035,7 @@
       throw new Error('\u70B9\u51FB\u524D\u7D20\u6750\u9875\u6216\u52FE\u9009\u72B6\u6001\u5DF2\u6539\u53D8\uFF1A' + id);
     }
     var wanted = shouldCheck ? expectedIds.concat(id) : expectedIds.filter(function (value) { return value !== id; });
+    if (shouldCheck) rememberChasePage(page, wanted);
     before.target.click();
     var observed = '';
     try {
@@ -1380,8 +1383,10 @@
       liveGoal: cfg.planKind === 'live' ? cfg.liveGoal : null,
       liveGender: cfg.planKind === 'live' ? cfg.liveGender : null,
       page: pageNumber(drawer),
-      status: 'submitting',
-      submitAttempts: 1,
+      status: 'prepared',
+      submitAttempts: 0,
+      roiBoundary: cfg.mode === 'roi' && cfg.roiStrategy === 'whole_group' &&
+        items.some(item => item.roi === null || item.roi < cfg.roiThreshold),
       createdAt: new Date().toISOString(),
       taskId: ''
     };
@@ -1436,6 +1441,9 @@
       try {
         await safeClick(submit, '\u8FFD\u6295\u5F39\u7A97\u63D0\u4EA4', false, function () {
           if (!formReady(submit)) throw new Error('\u63D0\u4EA4\u524D\u5F39\u7A97\u53C2\u6570\u6216\u6309\u94AE\u5DF2\u53D8\u5316');
+          record.status = 'submitting';
+          record.submitAttempts = 1;
+          saveJournal();
           clicked = true;
         });
       } catch (clickError) {
@@ -1449,6 +1457,9 @@
         addLog('\u63D0\u4EA4\u6309\u94AE\u5728\u70B9\u51FB\u524D\u53D8\u5316\uFF1B\u5DF2\u590D\u6838\u53C2\u6570\u4E14\u9996\u6B21\u672A\u70B9\u51FB\uFF0C\u91CD\u8BD5\u70B9\u51FB\u4E00\u6B21');
         await safeClick(freshSubmit, '\u8FFD\u6295\u5F39\u7A97\u63D0\u4EA4', false, function () {
           if (!formReady(freshSubmit)) throw new Error('\u91CD\u8BD5\u524D\u5F39\u7A97\u53C2\u6570\u6216\u6309\u94AE\u5DF2\u53D8\u5316');
+          record.status = 'submitting';
+          record.submitAttempts = 1;
+          saveJournal();
           clicked = true;
         });
       }
@@ -1689,6 +1700,7 @@
       if (++pageSteps > 300) throw new Error('\u8D85\u8FC7300\u6B21\u76F4\u64AD\u7D20\u6750\u9875\u626B\u63CF\uFF0C\u5DF2\u505C\u6B62');
       var bundle = await waitForLiveStatusPage();
       var page = pageNumber(bundle.drawer);
+      rememberChasePage(page);
       if (bundle.rows.length > 100) throw new Error('\u5F53\u524D\u76F4\u64AD\u7D20\u6750\u9875\u8D85\u8FC7100\u6761');
       if (selectedCount(bundle.drawer) !== 0) throw new Error('\u5F53\u524D\u9875\u5B58\u5728\u672A\u6E05\u9664\u7684\u52FE\u9009\uFF0C\u7981\u6B62\u7EE7\u7EED');
       var pageIds = bundle.rows.map(function (item) { return item.id; });
@@ -1860,7 +1872,7 @@
   async function runRoiStrict() {
     var cfg = state.config;
     var selected = [];
-    var handled = new Set();
+    var handled = consumedChaseIds(state.currentRun);
     var reason = '';
     var steps = 0;
     while (state.currentRun.groups.length < cfg.maxGroups) {
@@ -1868,6 +1880,7 @@
       if (state.stopRequested) throw new Error(state.stopMessage);
       if (++steps > 300) throw new Error('\u8D85\u8FC7300\u6B21\u7D20\u6750\u9875\u626B\u63CF\uFF0C\u5DF2\u505C\u6B62');
       var bundle = await waitForProductRowsReady();
+      rememberChasePage(pageNumber(bundle.drawer));
       if (bundle.rows.length > roiPageSize()) throw new Error('\u5F53\u524D\u9875\u7D20\u6750\u6570\u8D85\u8FC7\u6BCF\u9875\u8BBE\u7F6E');
       if (selectedCount(bundle.drawer) !== selected.length) throw new Error('\u8DE8\u9875\u9009\u4E2D\u6570\u91CF\u672A\u4FDD\u7559\uFF0C\u7981\u6B62\u7EE7\u7EED');
       var candidates = bundle.rows.filter(function (item) { return !handled.has(item.id); });
@@ -1929,7 +1942,7 @@
   async function runRoiWholeGroup() {
     var cfg = state.config;
     var selected = [];
-    var handled = new Set();
+    var handled = consumedChaseIds(state.currentRun);
     var stopAfterGroup = false;
     var pausedForDash = false;
     var reason = '';
@@ -1939,6 +1952,7 @@
       if (state.stopRequested) throw new Error(state.stopMessage);
       if (++steps > 300) throw new Error('\u8D85\u8FC7300\u6B21\u7D20\u6750\u9875\u626B\u63CF\uFF0C\u5DF2\u505C\u6B62');
       var bundle = await waitForProductRowsReady();
+      rememberChasePage(pageNumber(bundle.drawer));
       if (bundle.rows.length > roiPageSize()) throw new Error('\u5F53\u524D\u9875\u7D20\u6750\u6570\u8D85\u8FC7\u6BCF\u9875\u8BBE\u7F6E');
       if (selectedCount(bundle.drawer) !== selected.length) throw new Error('\u8DE8\u9875\u9009\u4E2D\u6570\u91CF\u672A\u4FDD\u7559\uFF0C\u7981\u6B62\u7EE7\u7EED');
       var candidates = bundle.rows.filter(function (item) { return !handled.has(item.id) && eligibleForChase(item); });
@@ -2011,7 +2025,7 @@
     if (state.config.planKind === 'live') return runLivePages();
     var cfg = state.config;
     var selected = [];
-    var handled = new Set();
+    var handled = consumedChaseIds(state.currentRun);
     var reason = '';
     var pageSteps = 0;
     while (state.currentRun.groups.length < cfg.maxGroups) {
@@ -2019,6 +2033,7 @@
       if (state.stopRequested) throw new Error(state.stopMessage);
       if (++pageSteps > 300) throw new Error('\u8D85\u8FC7300\u6B21\u7D20\u6750\u9875\u626B\u63CF\uFF0C\u5DF2\u505C\u6B62');
       var bundle = await waitForProductRowsReady();
+      rememberChasePage(pageNumber(bundle.drawer));
       if (bundle.rows.length > 20) throw new Error('\u5F53\u524D\u9875\u8D85\u8FC720\u6761');
       if (selectedCount(bundle.drawer) !== selected.length) {
         throw new Error('\u8DE8\u9875\u9009\u4E2D\u6570\u91CF\u672A\u4FDD\u7559\uFF0C\u7981\u6B62\u7EE7\u7EED');
@@ -2533,10 +2548,20 @@
       state.config.planId = current.planId;
       state.config.planName = current.planName;
       state.config.planKind = current.planKind;
-      var run = pending[pending.length - 1];
+      const point = chaseCheckpoint(state.config);
+      const run = pending.find(item => item.id === point?.runId) || pending[pending.length - 1];
       state.currentRun = run;
       setPhase('\u53EA\u91CD\u65B0\u6838\u67E5\u8C03\u63A7\u4EFB\u52A1\uFF0C\u4E0D\u63D0\u4EA4\u7D20\u6750');
+      run.verifyIncomplete = false;
       var allGood = await verifyTasks(false);
+      if (!run.verifyIncomplete) {
+        run.groups.forEach(group => {
+          if (group.status === 'verified' && !group.uiSuccess) {
+            group.uiSuccess = true;
+            group.recovered = true;
+          }
+        });
+      }
       run.verifyDeferred = false;
       run.status = allGood ? 'verified' : 'needs_review';
       saveJournal();
@@ -2706,9 +2731,78 @@
     }
   }
 
-  async function start() {
+  const CHASE_CONTINUE_PREFIX = 'qc-chase-continue-v1-';
+
+  function chaseContinueKey(cfg) {
+    return cfg.accountId && cfg.planId ? CHASE_CONTINUE_PREFIX + cfg.accountId + ':' + cfg.planId : '';
+  }
+
+  function chaseCheckpoint(cfg = state.config) {
+    try { return JSON.parse(sessionStorage.getItem(chaseContinueKey(cfg)) || 'null'); }
+    catch (_) { return null; }
+  }
+
+  function setChaseCheckpoint(cfg, value) {
+    const key = chaseContinueKey(cfg);
+    if (value) sessionStorage.setItem(key, JSON.stringify(value));
+    else sessionStorage.removeItem(key);
+  }
+
+  function rememberChasePage(page, wanted) {
+    const point = chaseCheckpoint();
+    if (!point || point.runId !== state.currentRun?.id) throw new Error('本轮进度未能读取，禁止提交');
+    if (!wanted && page === point.page) return;
+    setChaseCheckpoint(state.config, {...point, page, selected: wanted || []});
+  }
+
+  function consumedChaseIds(run) {
+    return new Set(run.groups.filter(g => g.uiSuccess).flatMap(g => [...g.ids, ...(g.platformSkippedIds || [])]));
+  }
+
+  async function clearChaseResumeSelection(checkpoint, drawer) {
+    if (!selectedCount(drawer)) return;
+    const page = pageNumber(drawer), selection = materialSelection(drawer);
+    if (page !== checkpoint.page || selection.count !== selection.ids.length ||
+        selection.ids.some(id => !checkpoint.selected.includes(id))) {
+      throw new Error('页面存在无法确认来源的勾选，请先手动取消勾选');
+    }
+    await clearAttemptSelection(checkpoint.selected, page);
+  }
+
+  async function restoreChasePage(target) {
+    let drawer = context('creative').drawer;
+    const current = pageNumber(drawer);
+    if (current > target) {
+      const footer = unique(drawer.querySelectorAll('.main-vmok-plugin-oc-pagination-wrapper'), '素材分页栏');
+      const first = unique(Array.from(footer.querySelectorAll('li.main-vmok-plugin-page-turner__item'))
+        .filter(el => exactText(el) === '1'), '素材第 1 页');
+      await safeClick(first, '返回素材第 1 页');
+      await waitFor(() => pageNumber(context('creative').drawer) === 1, '返回素材第 1 页', 10000);
+    }
+    while (pageNumber(context('creative').drawer) < target) {
+      if (!await nextPage()) throw new Error('无法返回本轮中断的第 ' + target + ' 页');
+    }
+  }
+
+  function closePausedRun() {
     if (state.busy) return;
-    try { readFormSnapshot(); } catch (error) { setPhase('\u5F00\u59CB\u524D\u68C0\u67E5\u5931\u8D25\uFF1A' + error.message); return; }
+    const point = chaseCheckpoint();
+    if (!point) return;
+    try {
+      context(null);
+      const run = journal.runs.find(item => item.id === point.runId);
+      if (!run || run.groups.some(group => !group.uiSuccess && group.status !== 'prepared')) {
+        throw new Error('上次提交尚未核实，请先重新核查任务');
+      }
+      if (!window.confirm('结束本轮？已提交的追投任务会保留。')) return;
+      setChaseCheckpoint(state.config, null);
+      setPhase('已结束本轮，可以重新设置追投参数');
+    } catch (error) { setPhase(error.message); }
+  }
+
+  async function start(manualResume = false) {
+    if (state.busy) return;
+    try { if (manualResume !== true) readFormSnapshot(); } catch (error) { setPhase('\u5F00\u59CB\u524D\u68C0\u67E5\u5931\u8D25\uFF1A' + error.message); return; }
     state.busy = true;
     state.stopRequested = false;
     state.stopMessage = '\u7528\u6237\u5DF2\u8BF7\u6C42\u505C\u6B62';
@@ -2726,10 +2820,36 @@
     render();
     try {
       await dismissKnownPromo();
-      validateConfig();
-      if (selectedCount(context('creative').drawer) !== 0) {
-        throw new Error('\u9875\u9762\u5DF2\u6709\u52FE\u9009\u7D20\u6750\uFF0C\u8BF7\u5148\u624B\u52A8\u53D6\u6D88\u540E\u518D\u5F00\u59CB\u8FFD\u6295');
+      const point = chaseCheckpoint();
+      if (manualResume === true) {
+        const current = context('creative');
+        if (!point || point.config.planKind !== current.planKind || point.config.planName !== current.planName ||
+            point.config.accountName !== current.accountName ||
+            point.dateRange !== new URL(location.href).searchParams.get('dateRange')) {
+          throw new Error('请回到本轮原账户、计划、素材页和数据日期后继续');
+        }
+        const saved = journal.runs.find(item => item.id === point.runId &&
+          item.accountId === current.accountId && item.planId === current.planId);
+        if (!saved) throw new Error('本轮提交日志已缺失，无法安全继续');
+        saved.groups = saved.groups.filter(group => group.status !== 'prepared');
+        if (saved.groups.some(group => !group.uiSuccess || ['possible_duplicate', 'mismatch'].includes(group.status))) {
+          throw new Error('本轮有提交结果未核实；请先点「只重新核查未核清任务」，核查通过后回素材页继续');
+        }
+        if (Array.from(document.querySelectorAll('.assist-task-modal')).some(visible)) {
+          throw new Error('请先关闭千川追投弹窗，再继续本轮');
+        }
+        state.config = {...point.config};
+        state.logs = (saved.logs || []).slice(-60);
+        validateConfig();
+        await clearChaseResumeSelection(point, current.drawer);
+        state.resumeRun = saved;
+        saved.status = 'running';
+      } else if (point && !state.resumeRun) {
+        throw new Error('本轮尚未结束，请使用「继续本轮」');
       }
+      validateConfig();
+      const materialDrawer = context('creative').drawer;
+      if (selectedCount(materialDrawer) !== 0) throw new Error('页面已有勾选素材，请先取消后再继续');
       var cfg = state.config;
       var run = state.resumeRun || {
         id: 'run-' + Date.now(),
@@ -2764,22 +2884,31 @@
         state.resumeRun = null;
         addLog('\u5237\u65B0\u540E\u6062\u590D\u540C\u4E00\u8F6E\u8FFD\u6295\uFF1B\u5DF2\u6392\u9664\u5148\u524D\u6210\u529F\u7684' +
           run.groups.reduce(function (sum, group) { return sum + group.count; }, 0) + '\u6761\u7D20\u6750');
+        run.executionError = false;
+        run.incomplete = false;
+        run.verifyDeferred = false;
       } else journal.runs.push(run);
       saveJournal();
+      if (!point) setChaseCheckpoint(cfg, {runId: run.id, config: {...cfg}, page: null, selected: [],
+        dateRange: new URL(location.href).searchParams.get('dateRange')});
       setPhase('\u8BBE\u7F6E\u7D20\u6750\u7B5B\u9009\u548C\u6392\u5E8F');
       await ensureSourceFilter();
       await ensurePageSize(cfg.mode === 'roi' ? roiPageSize() : (cfg.planKind === 'live' ? 100 : 20));
       await ensureSort(cfg.mode === 'roi' ? '\u7EFC\u5408\u8425\u9500ROI' : '\u521B\u5EFA\u65F6\u95F4');
+      if (manualResume === true && point.page) await restoreChasePage(point.page);
       rowsNow();
       setPhase('\u9010\u9875\u8FFD\u6295');
       try {
-        run.stopReason = cfg.mode === 'roi' ? await runRoi() : await runDate();
+        run.stopReason = run.groups.some(group => group.uiSuccess && group.roiBoundary) ?
+          '本轮已提交跨过 ROI 阈值的一组；只核查提交结果' :
+          (cfg.mode === 'roi' ? await runRoi() : await runDate());
       } catch (error) {
         if (refreshUnreadyLivePage(run, error)) return;
         run.executionError = true;
         run.stopReason = error.message;
         addLog('\u6267\u884C\u505C\u6B62\uFF1A' + error.message);
       }
+      if (!run.executionError && !run.incomplete) setChaseCheckpoint(cfg, null);
       if (run.executionError || run.incomplete) {
         run.status = 'needs_review';
         run.verifyDeferred = run.groups.length > 0;
@@ -2813,6 +2942,7 @@
     } finally {
       state.busy = false;
       state.viewportLock = null;
+      state.resumeRun = null;
       render();
       if (state.batchRunActive && !state.refreshing) advanceLiveBatch(state.currentRun);
     }
@@ -2880,7 +3010,19 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       right: Math.max(0, window.innerWidth - view.left - view.width),
       defaultRatio: range ? clamp((initialTop - min) / range, 0, 1) : 0};
   }
+  function placePanel() {
+    const view = viewport();
+    const style = shadow.host.style;
+    // Layout in unzoomed CSS pixels, then anchor to the visible part of the page.
+    const margin = Math.min(12, (view.width / view.unit) / 12, (view.height / view.unit) / 12);
+    style.setProperty('--qc-panel-right', (window.innerWidth - view.left - view.width + margin * view.unit) + 'px');
+    style.setProperty('--qc-panel-top', (view.top + margin * view.unit) + 'px');
+    style.setProperty('--qc-panel-scale', String(view.unit));
+    style.setProperty('--qc-panel-width', Math.min(380, view.width / view.unit - margin * 2) + 'px');
+    style.setProperty('--qc-panel-height', (view.height / view.unit - margin * 2) + 'px');
+  }
   function place() {
+    placePanel();
     if (!launcher?.isConnected) return;
     const mode = orientation(), size = geometry(), saved = read()[mode];
     const ratio = typeof saved === 'number' && Number.isFinite(saved) ? clamp(saved, 0, 1) : size.defaultRatio;
@@ -2908,16 +3050,17 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       desired[i].top = Math.min(desired[i].top, i === desired.length - 1
         ? size.min + size.range : desired[i + 1].top - distance);
     const top = desired.find(item => item.slot === slot).top;
-    launcher.style.transform = 'none';
+    launcher.style.transform = 'scale(' + size.unit + ')';
+    launcher.style.transformOrigin = 'top right';
     launcher.style.boxSizing = 'border-box';
-    launcher.style.width = (34 * size.unit) + 'px';
-    launcher.style.fontSize = (12 * size.unit) + 'px';
-    launcher.style.padding = (8 * size.unit) + 'px ' + (5 * size.unit) + 'px';
-    launcher.style.letterSpacing = (2 * size.unit) + 'px';
+    launcher.style.width = '34px';
+    launcher.style.fontSize = '12px';
+    launcher.style.padding = '8px 5px';
+    launcher.style.letterSpacing = '2px';
     launcher.style.right = size.right + 'px';
-    launcher.style.height = size.height + 'px';
-    launcher.style.minHeight = size.height + 'px';
-    launcher.style.maxHeight = size.height + 'px';
+    launcher.style.height = (size.height / size.unit) + 'px';
+    launcher.style.minHeight = (size.height / size.unit) + 'px';
+    launcher.style.maxHeight = (size.height / size.unit) + 'px';
     launcher.style.top = top + 'px';
     launcher.style.bottom = 'auto';
     launcher.style.touchAction = 'none';
@@ -2997,7 +3140,7 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       '*{box-sizing:border-box}',
       '.launcher{position:fixed;right:0;z-index:2147483645;width:34px;min-height:116px;writing-mode:vertical-rl;letter-spacing:2px;background:rgba(0,122,255,.95);color:#fff;border:1px solid rgba(255,255,255,.38);border-right:0;border-radius:13px 0 0 13px;padding:11px 7px;box-shadow:0 6px 20px rgba(0,72,158,.22);font-size:12px;font-weight:600;cursor:grab;touch-action:none;user-select:none;backdrop-filter:blur(12px)}',
       '.launcher:hover{background:#0066d6;width:38px}',
-      '.panel{position:fixed;right:12px;top:12px;width:min(380px,calc(100vw - 24px));height:calc(100vh - 24px);max-height:calc(100dvh - 24px);overflow:hidden;flex-direction:column;z-index:2147483646;background:rgba(250,251,253,.97);border:1px solid rgba(200,208,220,.7);border-radius:18px;box-shadow:0 18px 48px rgba(28,41,62,.2),0 2px 8px rgba(28,41,62,.08);backdrop-filter:blur(18px);font-size:13px}',
+      '.panel{position:fixed;right:var(--qc-panel-right,12px);top:var(--qc-panel-top,12px);width:var(--qc-panel-width,380px);height:var(--qc-panel-height,calc(100vh - 24px));transform:scale(var(--qc-panel-scale,1));transform-origin:top right;overflow:hidden;flex-direction:column;z-index:2147483646;background:rgba(250,251,253,.97);border:1px solid rgba(200,208,220,.7);border-radius:18px;box-shadow:0 18px 48px rgba(28,41,62,.2),0 2px 8px rgba(28,41,62,.08);backdrop-filter:blur(18px);font-size:13px}',
       '.head{flex:none;display:flex;align-items:center;justify-content:space-between;min-height:58px;padding:12px 14px 12px 18px;color:#1d1d1f;background:rgba(255,255,255,.92);border-bottom:1px solid #e5e9ef}',
       '.head strong{font-size:15px;letter-spacing:.2px;font-weight:700}.head strong:before{content:"";display:inline-block;width:9px;height:9px;margin-right:9px;border-radius:50%;background:#007aff;box-shadow:0 0 0 4px #eaf3ff;vertical-align:1px}',
       '.head button{width:30px;height:30px;display:grid;place-items:center;color:#596272;background:#f0f2f5;border:0;border-radius:50%;font-size:21px;line-height:1;cursor:pointer}.head button:hover{background:#e3e7ed;color:#1d1d1f}',
@@ -3017,7 +3160,7 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       '</style>',
       '<button class="launcher" id="launch" title="\u70B9\u51FB\u5C55\u5F00\uFF0C\u62D6\u52A8\u53EF\u8C03\u6574\u4F4D\u7F6E" aria-label="\u5C55\u5F00\u5343\u5DDD\u8FFD\u6295\u52A9\u624B" style="display:', state.open === false ? 'block' : 'none', ';top:', esc(state.launcherTop), '%">\u8FFD\u6295\u52A9\u624B</button>',
       '<div class="panel" style="display:', state.open === false ? 'none' : 'flex', '">',
-      '<div class="head"><strong>\u5343\u5DDD\u7D20\u6750\u8FFD\u6295\u52A9\u624B v0.4.41</strong><button id="close" title="\u6700\u5C0F\u5316" aria-label="\u6700\u5C0F\u5316\u52A9\u624B">\u2212</button></div>',
+      '<div class="head"><strong>\u5343\u5DDD\u7D20\u6750\u8FFD\u6295\u52A9\u624B v0.4.42</strong><button id="close" title="\u6700\u5C0F\u5316" aria-label="\u6700\u5C0F\u5316\u52A9\u624B">\u2212</button></div>',
       '<div class="body">',
       '<div class="card"><div class="muted">\u9501\u5B9A\u8D26\u6237 / ', cfg.planKind === 'live' ? '\u63A8\u76F4\u64AD\u95F4\u8BA1\u5212' : '\u5546\u54C1\u81EA\u9009\u8BA1\u5212', '</div>',
       '<strong>', esc(cfg.accountName || '\u5C1A\u672A\u9501\u5B9A'), '</strong><br>',
@@ -3091,9 +3234,11 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       '<div class="small">\u6B63\u5E38\u8FFD\u6295\u7ED3\u675F\u540E\u7EDF\u4E00\u8FDB\u5165\u8C03\u63A7\u9875\u6838\u67E5\uFF1B\u4E2D\u9014\u5F02\u5E38\u6216\u624B\u52A8\u505C\u6B62\u65F6\u7559\u5728\u7D20\u6750\u9875\uFF0C\u5F85\u624B\u52A8\u6838\u67E5\uFF0C\u4E0D\u81EA\u52A8\u91CD\u63D0\u3002</div>',
       '<div class="hint">\u63A8\u5546\u54C1\u7FFB\u9875\u524D\u5148\u63D0\u4EA4\u672C\u9875\u4F59\u91CF\uFF0C\u518D\u6E05\u7A7A\u52FE\u9009\u5E76\u7FFB\u9875\uFF1B\u4E0D\u8DB3\u8BBE\u5B9A\u6761\u6570\u4E5F\u4F1A\u5355\u72EC\u6210\u7EC4\uFF0C\u9884\u7B97\u4ECD\u6309\u5355\u7EC4\u8BBE\u7F6E\uFF0C\u5E76\u8BA1\u5165\u7EC4\u6570\u4E0A\u9650\u3002</div>',
       '<div class="small warn">\u5355\u8BA1\u5212\u8FFD\u6295\u4EC5\u64CD\u4F5C\u5F53\u524D\u9501\u5B9A\u7684\u8BA1\u5212\u3002\u8FD0\u884C\u4E2D\u4E0D\u64CD\u4F5C\u539F\u8BA1\u5212\u9884\u7B97\u3001ROI \u76EE\u6807\u548C\u6295\u653E\u72B6\u6001\u3002</div>',
-      '<div class="buttons"><button class="btn primary" id="start" ', state.busy ? 'disabled' : '', '>',
+      '<div class="buttons"><button class="btn primary" id="start" ', state.busy || chaseCheckpoint(cfg) ? 'disabled' : '', '>',
       '\u5F00\u59CB\u8FFD\u6295\u5E76\u63D0\u4EA4', '</button>',
       '<button class="btn danger" id="stop" ', state.busy ? '' : 'disabled', '>\u505C\u6B62</button></div>',
+      chaseCheckpoint(cfg) ? '<div class="buttons"><button class="btn primary" id="resume" ' + (state.busy ? 'disabled' : '') + '>继续本轮</button>' +
+        '<button class="btn" id="close-run" ' + (state.busy ? 'disabled' : '') + '>结束本轮</button></div>' : '',
       '<button class="btn" id="recheck" style="width:100%;margin-top:8px" ', state.busy ? 'disabled' : '', '>\u53EA\u91CD\u65B0\u6838\u67E5\u672A\u6838\u6E05\u4EFB\u52A1\uFF08\u4E0D\u63D0\u4EA4\uFF09</button>',
       '<div class="section">\u6267\u884C\u72B6\u6001</div><div class="status">', esc(status), '</div>',
       '<div class="section">\u6267\u884C\u8BB0\u5F55</div><div class="log">', logs || '\u6682\u65E0\u8BB0\u5F55', '</div>',
@@ -3161,7 +3306,11 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
     if (dash) dash.onchange = function () { cfg.dashPolicy = dash.value; };
     var strategy = shadow.getElementById('roi-strategy');
     if (strategy) strategy.onchange = function () { cfg.roiStrategy = strategy.value; render(); };
-    shadow.getElementById('start').onclick = start;
+    shadow.getElementById('start').onclick = () => start();
+    const resume = shadow.getElementById('resume');
+    if (resume) resume.onclick = () => start(true);
+    const closeRun = shadow.getElementById('close-run');
+    if (closeRun) closeRun.onclick = closePausedRun;
     shadow.getElementById('recheck').onclick = recheckPending;
     shadow.getElementById('stop').onclick = function () {
       state.stopRequested = true;

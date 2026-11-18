@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         千川调控助手
 // @namespace    local.qianchuan.task-governor
-// @version      0.1.15
+// @version      0.1.16
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js
 // @description  直播高ROI任务追加预算，支持因任务预算不足暂停的任务；低ROI删除；先检查本页再执行
@@ -30,6 +30,7 @@
     const LOCK_PREFIX = 'qc-task-governor-lock-v1-';
     const REPORT_PREFIX = 'qc-task-governor-report-v1-';
     const LAUNCHER_KEY = 'qc-task-governor-launcher-top-v1';
+    const CONTINUE_PREFIX = 'qc-governor-continue-v1-';
     const MAX_PREVIEW_AGE = 2 * 60 * 1000;
     let tabToken = '';
     try {
@@ -57,7 +58,7 @@
     const state = {
       open: false, busy: false, stop: false, phase: '请进入计划详情并锁定当前计划',
       lock: tabToken ? GM_getValue(LOCK_PREFIX + tabToken, null) : null,
-      preview: null, logs: [], report: tabToken ? GM_getValue(REPORT_PREFIX + tabToken, '') : '',
+      preview: null, continuation: tabToken ? GM_getValue(CONTINUE_PREFIX + tabToken, {}) : {}, logs: [], report: tabToken ? GM_getValue(REPORT_PREFIX + tabToken, '') : '',
       scrollTop: 0, launcherTop: Math.max(12, Math.min(88, Number(GM_getValue(LAUNCHER_KEY, 62)) || 62))
     };
     function esc(value) {
@@ -355,7 +356,8 @@
           (Number.isFinite(item.paymentRoi) && item.paymentRoi < params.paymentRoi);
       }
       if (!Number.isFinite(item.roi)) return false;
-      if (params.action === 'live-delete') return /调控中/.test(item.status) && item.roi < params.roi;
+      if (params.action === 'live-delete') return Number.isSafeInteger(item.spend) && item.spend > 0 &&
+        /调控中/.test(item.status) && item.roi < params.roi;
       if (params.action !== 'live-budget') return false;
       if (!(item.roi >= params.roi) || !Number.isSafeInteger(item.budget) || item.budget < 0 ||
           !Number.isSafeInteger(item.spend) || item.spend < 0) return false;
@@ -385,6 +387,7 @@
     }
     async function previewPage() {
       if (state.busy) return;
+      if (checkpoint()) { phase('本轮尚未结束，请先继续或结束本轮'); return; }
       readCfg();
       state.busy = true; state.stop = false; state.preview = null; render();
       try {
@@ -436,22 +439,122 @@
       return one(modals.filter(m => text(m).includes(expected) && text(m).includes('删除后不可恢复')),
         '千川删除确认弹窗');
     }
-    async function confirmDelete(expected) {
+    async function confirmDelete(expected, beforeSubmit) {
       const modal = await wait(() => {
         try { return visibleDeleteModal(expected); } catch (_) { return null; }
       }, '删除确认弹窗', 8000);
       const yes = one(Array.from(modal.querySelectorAll('button')).filter(b => text(b) === '确定'), '删除确认按钮');
+      if (yes.disabled || yes.getAttribute('aria-disabled') === 'true') throw new Error('千川删除确定按钮不可用');
+      beforeSubmit();
       yes.click();
       return modal;
     }
-    async function waitRemoved(ids) {
+    function continuationKey(lock) { return lock ? lock.accountId + ':' + lock.planId + ':' + lock.kind : ''; }
+    function checkpoint() { return state.continuation[continuationKey(state.lock)]; }
+    function saveCheckpoint(value) {
+      const key = continuationKey(state.lock);
+      const records = {...state.continuation};
+      if (value) records[key] = value;
+      else delete records[key];
+      if (tabToken) GM_setValue(CONTINUE_PREFIX + tabToken, records);
+      state.continuation = records;
+    }
+    function taskScope(table) {
+      return JSON.stringify([new URL(location.href).searchParams.get('dateRange'),
+        Array.from(table.d.drawer.querySelectorAll('[class*="filter-echo-item"],input[type="search"],input[placeholder*="任务名称"],th[aria-sort]'))
+          .filter(visible).map(el => [text(el), el.value || '', el.getAttribute('aria-sort') || ''])]);
+    }
+    function checkpointRows(p, table = taskTable(), checkScope = true) {
+      if (table.d.accountId !== p.accountId || table.d.planId !== p.planId || table.d.kind !== p.kind ||
+          table.page !== p.page || table.size !== p.size || (checkScope && taskScope(table) !== p.scope) ||
+          JSON.stringify(table.roiLabels) !== JSON.stringify(p.roiLabels)) {
+        throw new Error('请回到原调控任务页（第 ' + p.page + ' 页，' + p.size + '）并恢复原来的 ROI 列');
+      }
+      return rowsById(table);
+    }
+    function taskTotal(table) {
+      const totals = new Set(Array.from(text(table.d.drawer).matchAll(/共\s*([0-9,]+)\s*条(?:任务|记录)/g),
+        m => Number(m[1].replace(/,/g, ''))));
+      return totals.size === 1 ? [...totals][0] : null;
+    }
+    function stageAction(p, ids, budget = null) {
+      if (state.stop) throw new Error('用户已停止，未提交');
+      const table = taskTable(), record = checkpoint();
+      // The selected-task toolbar can hide the original filters during live batch deletion.
+      const map = checkpointRows(p, table, p.params.action !== 'live-delete');
+      if (!record || record.pending) throw new Error('上次提交未核实，未执行新操作');
+      for (const id of ids) {
+        const expected = p.targets.find(x => x.id === id), fresh = map.get(id);
+        if (!expected || !fresh || !sameValues(expected, fresh) || !eligible(fresh, p.params)) {
+          throw new Error('提交前任务 ' + id + ' 已变化，未提交');
+        }
+      }
+      saveCheckpoint({...record, pending: {ids, budget, total: budget === null ? taskTotal(table) : null}});
+    }
+    function finishAction(ids) {
+      const record = checkpoint();
+      saveCheckpoint({...record, pending: null, remaining: record.remaining.filter(x => !ids.includes(x.id))});
+    }
+    function actionConfirmed(p, pending, recovering) {
+      const table = taskTable();
+      if (table.d.accountId !== p.accountId || table.d.planId !== p.planId || table.d.kind !== p.kind ||
+          taskScope(table) !== p.scope) return false;
+      if (pending.budget !== null) return checkpointRows(p, table).get(pending.ids[0])?.budget === pending.budget;
+      const total = taskTotal(table);
+      const confirmedTotal = Number.isSafeInteger(pending.total) && total === pending.total - pending.ids.length;
+      if (confirmedTotal) {
+        // Removing the last item on a page can move the task list back one page.
+        const size = Number(String(p.size).match(/^\d+/)?.[0]);
+        const last = Math.max(1, Math.ceil(total / size));
+        if (total === 0 && table.page === '1' && table.rows.length === 0) return true;
+        if (size > 0 && Number(p.page) > last && Number(table.page) === last && table.size === p.size) {
+          const map = rowsById(table);
+          return pending.ids.every(id => !map.has(id));
+        }
+      }
+      const map = checkpointRows(p, table);
+      return pending.ids.every(id => !map.has(id)) &&
+        (confirmedTotal || (!recovering && pending.total === null));
+    }
+    async function waitRemoved(p, ids) {
       await wait(() => {
-        try {
-          const table = taskTable();
-          const found = rowsById(table);
-          return ids.every(id => !found.has(id));
-        } catch (_) { return false; }
+        try { return actionConfirmed(p, checkpoint().pending, false); } catch (_) { return false; }
       }, '删除后任务列表更新', 20000);
+      finishAction(ids);
+    }
+    async function resumePreview(record) {
+      const p = record.preview;
+      if (JSON.stringify(settings()) !== JSON.stringify(p.params)) throw new Error('请恢复本轮原筛选条件再续跑');
+      const {drawer} = assertLock();
+      if (Array.from(document.querySelectorAll('.main-vmok-plugin-modal,[role="dialog"],[class*="popover"][class*="content"]'))
+        .some(el => visible(el) && !el.contains(drawer) &&
+          (el.matches('.main-vmok-plugin-modal,[role="dialog"]') || (text(el).includes('调控日预算') && el.querySelector('input'))))) {
+        throw new Error('请先核实并关闭千川弹窗');
+      }
+      // Read the current task table; never switch pages or reuse a stale row for a write.
+      const table = taskTable();
+      if (record.pending) {
+        if (!actionConfirmed(p, record.pending, true)) throw new Error('上次提交结果仍未核实：' + record.pending.ids.join(', ') + '。请刷新原任务页后再继续；不会重提');
+        log('已从平台列表核实上次提交：' + record.pending.ids.join(', '));
+        finishAction(record.pending.ids);
+      }
+      const remaining = checkpoint().remaining;
+      if (!remaining.length) return {...p, targets: []};
+      const map = checkpointRows(p, table);
+      if (Array.from(map.values()).some(x => x.row.querySelector('input[type="checkbox"]')?.checked ||
+          x.row.querySelector('[role="checkbox"][aria-checked="true"]'))) throw new Error('请先取消页面残留勾选，再继续本轮');
+      const targets = [];
+      for (const old of remaining) {
+        const fresh = map.get(old.id);
+        if (!fresh || !eligible(fresh, p.params) || (p.params.action === 'live-budget' && old.budget !== fresh.budget)) {
+          log('续跑跳过已离开本页、已变更预算或不再达标的任务：' + old.id);
+          continue;
+        }
+        const {row, ...target} = fresh;
+        targets.push(target);
+      }
+      saveCheckpoint({...checkpoint(), remaining: targets});
+      return {...p, targets};
     }
     async function deleteLive(p) {
       const selectedByScript = [];
@@ -487,9 +590,9 @@
         }, '批量删除确认弹窗', 8000);
         if (!text(modal).includes(expected)) throw new Error('千川确认数量与预览不一致');
         if (state.stop) throw new Error('用户已停止本轮操作');
-        await confirmDelete(expected);
+        await confirmDelete(expected, () => stageAction(p, selectedByScript));
         submitted = true;
-        await waitRemoved(selectedByScript);
+        await waitRemoved(p, selectedByScript);
         log('直播任务本页已删除 ' + selectedByScript.length + ' 条：' + selectedByScript.join(', '));
       } finally {
         if (!submitted) {
@@ -536,7 +639,7 @@
             try { return visibleDeleteModal(expected); } catch (_) { return null; }
           }, '任务 ' + old.id + ' 的删除确认', 8000);
           if (state.stop) throw new Error('用户已停止；已完成 ' + count + ' 条');
-          await confirmDelete(expected);
+          await confirmDelete(expected, () => stageAction(p, [old.id]));
           submitted = true;
         } finally {
           if (!submitted) {
@@ -545,7 +648,7 @@
             modal?.querySelector('.main-vmok-plugin-modal__close-icon')?.click();
           }
         }
-        await waitRemoved([old.id]);
+        await waitRemoved(p, [old.id]);
         count++;
         log('商品素材追投任务已删除 ' + old.id + '；本页累计 ' + count + ' 条');
       }
@@ -604,27 +707,50 @@
           if (!beforeSubmit || !sameValues(old, beforeSubmit) || !eligible(beforeSubmit, p.params)) {
             throw new Error('任务 ' + old.id + ' 提交前状态、ROI 或预算已变化；未提交');
           }
+          if (pop.confirm.disabled || pop.confirm.getAttribute('aria-disabled') === 'true') throw new Error('预算确定按钮不可用');
+          stageAction(p, [old.id], target);
           submitted = true;
           pop.confirm.click();
-          await wait(() => taskById(old.id)?.budget === target, '任务 ' + old.id + ' 新预算更新', 20000);
+          await wait(() => checkpointRows(p).get(old.id)?.budget === target, '任务 ' + old.id + ' 新预算更新', 20000);
+          finishAction([old.id]);
           count++;
           log('任务 ' + old.id + ' 预算 ' + yuan(old.budget) + ' → ' + yuan(target) + ' 元');
         } finally { if (!submitted && pop.cancel.isConnected) pop.cancel.click(); }
       }
     }
-    async function executePage() {
+    function closePausedRun() {
+      if (state.busy) return;
+      try {
+        assertLock();
+        if (checkpoint()?.pending) throw new Error('上次提交尚未核实，请核对后继续本轮');
+        if (!window.confirm('结束本轮？已完成的操作会保留。')) return;
+        saveCheckpoint(null);
+        state.preview = null;
+        phase('已结束本轮，请重新检查后再执行');
+      } catch (error) { phase(error.message); }
+    }
+    async function executePage(resume = false) {
       if (state.busy) return;
       readCfg();
       state.busy = true; state.stop = false; render();
       let action = '';
       try {
-        const { p } = currentPreview();
+        assertLock();
+        const existing = checkpoint();
+        if (resume && !existing) throw new Error('当前计划没有可继续的本轮记录');
+        if (!resume && existing) throw new Error('本轮尚未结束，请使用「继续本轮」');
+        const preflight = resume ? null : currentPreview();
+        const p = resume ? await resumePreview(existing) : {...preflight.p, scope: taskScope(preflight.t)};
+        if (!resume) saveCheckpoint({preview: {...p, targets: []}, remaining: p.targets, pending: null});
         action = p.params.action;
         phase('正在执行第 ' + p.page + ' 页，共 ' + p.targets.length + ' 条');
         log('开始执行 ' + action + '，任务 ID：' + p.targets.map(x => x.id).join(', '));
-        if (action === 'live-delete') await deleteLive(p);
-        else if (action === 'product-delete') await deleteProduct(p);
-        else await addBudget(p);
+        if (p.targets.length) {
+          if (action === 'live-delete') await deleteLive(p);
+          else if (action === 'product-delete') await deleteProduct(p);
+          else await addBudget(p);
+        }
+        saveCheckpoint(null);
         state.preview = null;
         phase('本页操作完成，请等待平台刷新后再检查下一页');
         report('本页 ' + p.targets.length + ' 条任务已完成；可继续检查当前页或下一页');
@@ -670,14 +796,15 @@
         action === 'live-budget' ? 'ROI 达标后，调控中任务按预算与消耗的差值阈值筛选。已暂停且提示“任务预算不足”的任务，只有消耗达到当前预算才会追加。' :
         action === 'product-delete' ? '只填一个 ROI 阈值，按页面实际显示的综合营销 ROI / 支付 ROI 判断；两列都显示时共用该阈值，任一列为“—”或低于阈值即符合条件，不相加、不取平均。仍要求综合成本和消耗都大于 0；未显示的列不参与判断。升级时旧阈值不一致会留空，请重新填写。' : '';
       const targets = p?.targets || [];
+      const paused = !!checkpoint();
       const missingProductRoi = p?.kind === 'product' ? ['调控综合营销ROI', '调控支付ROI']
         .filter(label => !p.roiLabels.includes(label)) : [];
       const previewItems = targets.slice(0, 100).map(x => `<div class="item"><b>${esc(x.name || x.id)}</b><span class="pill">ID ${esc(x.id)}</span>${p.params.action === 'product-delete' ? `<span class="pill">调控综合营销ROI ${Number.isFinite(x.marketingRoi) ? esc(x.marketingRoi) : x.marketingRoiDash ? '—' : '不可用'}</span><span class="pill">调控支付ROI ${Number.isFinite(x.paymentRoi) ? esc(x.paymentRoi) : x.paymentRoiDash ? '—' : '不可用'}</span><span class="pill">综合成本 ${yuan(x.comprehensiveCost)} 元</span><span class="pill">调控消耗 ${yuan(x.spend)} 元</span>` : `<span class="pill">ROI ${esc(x.roi)}</span>`}${Number.isInteger(x.budget) ? `<span class="pill">预算 ${yuan(x.budget)}</span><span class="pill">消耗 ${yuan(x.spend)}</span>` : ''}${p.params.action === 'live-budget' ? `<span class="pill">拟改为 ${yuan(x.budget + p.params.add)}</span>` : ''}</div>`).join('');
       shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${state.open ? 'none' : 'block'};top:${esc(state.launcherTop)}%" title="点击展开，拖动调整位置">调控助手</button>
-        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>千川调控助手</strong><small>v0.1.15 · 按计划预填 ROI 和追加预算参数 · 默认静默最小化</small></div><button id="minimize" title="最小化">−</button></div><div class="body">
+        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>千川调控助手</strong><small>v0.1.16 · 按计划预填 ROI 和追加预算参数 · 默认静默最小化</small></div><button id="minimize" title="最小化">−</button></div><div class="body">
         <div class="card"><div class="eyebrow">锁定当前计划</div><div class="title">${esc(lock?.planName || '尚未锁定')}</div><div class="muted">账户 ${esc(lock?.accountId || '—')} · 计划 ${esc(lock?.planId || '—')} · ${lock?.kind === 'live' ? '推直播' : lock?.kind === 'product' ? '推商品' : '未识别'}</div>${needsRelock ? '<div class="hint warn">当前页面与已锁定计划不同，请重新锁定当前计划。</div>' : ''}<div class="row"><button id="lock" class="btn" ${state.busy ? 'disabled' : ''}>锁定当前计划</button></div></div>
         <div class="card"><div class="eyebrow">筛选条件</div><label class="field">本次操作<select id="action" ${fieldDisabled}><option value="">请选择</option>${choices}</select></label>${conditionFields}<div class="hint">锁定商品计划时自动选择低 ROI 删除；名单内预填 ROI，名单外留空。可手动修改；重新锁定或重新选择直播低 ROI 删除会恢复默认值。</div>${conditionHint ? `<div class="hint">${conditionHint}</div>` : ''}</div>
-        <div class="card"><div class="eyebrow">执行本页</div><div class="hint warn">先检查并核对任务清单，再点击执行。直播删除仅勾选本页合格任务并批量删除；商品删除逐条执行；预算逐条改为当前值加设定金额。可先在千川选 100 条/页；跨页请逐页检查。删除后不可恢复。</div><div class="row"><button id="preview" class="btn" ${state.busy || !lock ? 'disabled' : ''}>检查本页</button><button id="execute" class="btn primary" ${state.busy || !p?.targets.length ? 'disabled' : ''}>执行本页 ${targets.length} 条</button><button id="stop" class="btn stop" ${state.busy ? '' : 'disabled'}>停止</button></div>${p?.targets.length ? '<label class="check"><input id="ack" type="checkbox">我已核对下方任务 ID、ROI 和金额，确认执行本页操作</label>' : ''}</div>
+        <div class="card"><div class="eyebrow">执行本页</div><div class="hint warn">先检查并核对任务清单，再点击执行。直播删除仅勾选本页合格任务并批量删除；商品删除逐条执行；预算逐条改为当前值加设定金额。可先在千川选 100 条/页；跨页请逐页检查。删除后不可恢复。</div><div class="row"><button id="preview" class="btn" ${state.busy || !lock ? 'disabled' : ''}>检查本页</button><button id="execute" class="btn primary" ${state.busy || paused || !p?.targets.length ? 'disabled' : ''}>执行本页 ${targets.length} 条</button><button id="stop" class="btn stop" ${state.busy ? '' : 'disabled'}>停止</button></div>${paused ? '<div class="row"><button id="resume" class="btn primary" '+ (state.busy ? 'disabled' : '') +'>继续本轮</button><button id="close-run" class="btn" '+ (state.busy ? 'disabled' : '') +'>结束本轮</button></div>' : ''}${p?.targets.length ? '<label class="check"><input id="ack" type="checkbox">我已核对下方任务 ID、ROI 和金额，确认执行本页操作</label>' : ''}</div>
         <div class="card"><div class="eyebrow">执行状态</div><div class="status">${esc(state.phase)}</div>${p ? `<div class="hint">第 ${esc(p.page)} 页 · ${esc(p.size || '当前条数')} · ROI 列：${esc(p.roiLabels.join('、'))} · 预览于 ${new Date(p.at).toLocaleTimeString('zh-CN', { hour12: false })}</div>${missingProductRoi.length ? `<div class="hint warn">当前表格未显示：${esc(missingProductRoi.join('、'))}；这些指标不参与判定。</div>` : ''}<div style="max-height:240px;overflow:auto;margin-top:8px">${previewItems || '<div class="muted">本页没有符合条件的任务</div>'}</div>` : '<div class="hint">尚未生成本页预览</div>'}</div>
         <div class="card"><div class="eyebrow">执行记录</div><div class="log">${esc(state.logs.join('\n') || '尚无记录')}</div></div><div class="card"><div class="eyebrow">结果报告</div><div class="report">${esc(state.report || '执行后生成报告')}</div><div class="row"><button id="copy" class="btn">复制报告</button></div></div></div></div>`;
       const actionInput = shadow.getElementById('action');
@@ -695,6 +822,10 @@
         if (!shadow.getElementById('ack')?.checked) { phase('请先核对并勾选确认本页清单'); return; }
         executePage();
       };
+      const resume = shadow.getElementById('resume');
+      if (resume) resume.onclick = () => executePage(true);
+      const closeRun = shadow.getElementById('close-run');
+      if (closeRun) closeRun.onclick = closePausedRun;
       shadow.getElementById('stop').onclick = () => { state.stop = true; phase('已请求停止；当前未完成的操作会暂停'); };
       shadow.getElementById('copy').onclick = () => { if (state.report) GM_setClipboard(state.report); };
       const launcher = shadow.getElementById('launch');

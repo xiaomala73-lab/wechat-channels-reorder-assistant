@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Zero Cost Material Cleaner (Android)
 // @namespace    local.qianchuan.empty-cost-cleaner
-// @version      1.1.9
+// @version      1.1.10
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-android.user.js
 // @description  Android empty-cost cleanup; resume batch deletion after AIGC tagging, with final-row protection.
@@ -624,6 +624,8 @@
       if (!selectionMatches(ids) || ids.some(id => !rows().some(r => r.id === id && eligible(r)))) {
         throw new Error('\u70B9\u51FB\u786E\u5B9A\u524D\u7D20\u6750 ID\u3001\u6761\u4EF6\u6216\u52FE\u9009\u53D1\u751F\u53D8\u5316\uFF0C\u672A\u5220\u9664');
       }
+      if (pageInfo().page !== info.page || pageInfo().total !== oldTotal) throw new Error('确认前素材分页或总数已变化');
+      stageCleanerAction({kind: 'delete', ids, total: oldTotal});
     }, QUICK_CLICK);
     // \u5148\u7B49\u9875\u9762\u81EA\u884C\u66F4\u65B0\uFF1B\u672A\u66F4\u65B0\u65F6\u53EA\u7FFB\u9875\u91CD\u8BFB\uFF0C\u4E0D\u518D\u6B21\u70B9\u51FB\u5220\u9664\u3002
     let evidence = await deletionEvidence(ids, oldTotal, 8000);
@@ -641,6 +643,7 @@
       throw new Error('\u76EE\u6807 ID ' + ids.join(', ') + ' \u5220\u9664\u7ED3\u679C\u4E0D\u660E\u786E\uFF1A' + evidence.observed + '\uFF1B\u5DF2\u505C\u6B62\uFF0C\u7981\u6B62\u76F4\u63A5\u91CD\u8BD5\u5220\u9664');
     }
     state.deleted.push(...ids);
+    saveCleanerCheckpoint({pending: null, selection: []});
     log('\u786E\u8BA4\u5220\u9664 ' + ids.length + ' \u6761\uFF1B\u7D2F\u8BA1 ' + state.deleted.length + '/' + cfg.quota);
     await wait(() => !deletionDialog(), '\u5220\u9664\u5F39\u7A97\u6D88\u5931', 10000, true);
   }
@@ -664,9 +667,13 @@
     if (!popup) throw new Error('\u65E0\u6CD5\u5B9A\u4F4D AIGC \u6807\u7B7E\u786E\u8BA4\u9762\u677F');
     const confirms = Array.from(popup.querySelectorAll('button')).filter(el => visible(el) && ['\u786E\u5B9A','\u786E\u8BA4'].includes(text(el)));
     if (confirms.length !== 1) throw new Error('AIGC \u6807\u7B7E\u786E\u8BA4\u6309\u94AE\u4E0D\u552F\u4E00');
-    await click(confirms[0], '\u786E\u8BA4 AIGC\u8DD1\u91CF \u6807\u7B7E');
+    await click(confirms[0], '\u786E\u8BA4 AIGC\u8DD1\u91CF \u6807\u7B7E', () => {
+      if (!selectionMatches([id]) || pageInfo().page !== cleanerCheckpoint()?.page) throw new Error('补标前素材勾选或页码变化');
+      stageCleanerAction({kind: 'tag', id});
+    });
     await wait(() => rows().some(r => r.id === id && r.label.includes('AIGC\u8DD1\u91CF')), 'AIGC \u8DD1\u91CF\u6807\u7B7E\u751F\u6548', 15000);
     state.tagged.push(id);
+    saveCleanerCheckpoint({pending: null, fallbackIds: []});
     log('\u7D20\u6750 ' + id + ' \u89E6\u53D1 AIGC \u8B66\u544A\uFF0C\u5DF2\u6DFB\u52A0 AIGC\u8DD1\u91CF \u6807\u7B7E');
     if (selectedRows().length) await clearSelection();
   }
@@ -701,6 +708,7 @@
     try {
       if (dialogKind(prompt) === 'aigc') {
         await dismissDialog(prompt.dialog);
+        saveCleanerCheckpoint({fallbackIds: [...new Set([...cleanerCheckpoint().fallbackIds, ...ids])]});
         await clearSelection();
         log('\u672C\u7EC4 ' + ids.length + ' \u6761\u51FA\u73B0 AIGC \u8B66\u544A\uFF1B\u5DF2\u53D6\u6D88\u6279\u91CF\u5220\u9664\uFF0C\u6539\u4E3A\u9010\u6761\u6392\u67E5');
         return 'aigc';
@@ -757,22 +765,105 @@
     render();
     pending.resolve(approved);
   }
-  async function run(dry) {
-    if (state.busy) return;
+  const CLEANER_CONTINUE_PREFIX = 'qc-cleaner-continue-v1-';
+
+  function cleanerContinueKey() {
+    const lock = state.lock;
+    return lock ? CLEANER_CONTINUE_PREFIX + lock.accountId + ':' + lock.planId + ':' + lock.planKind : null;
+  }
+  function cleanerCheckpoint() {
+    try { return JSON.parse(sessionStorage.getItem(cleanerContinueKey()) || 'null'); }
+    catch (_) { return null; }
+  }
+  function saveCleanerCheckpoint(patch) {
+    const key = cleanerContinueKey();
+    if (!key) throw new Error('当前计划未锁定，无法记录本轮进度');
+    if (!patch) { sessionStorage.removeItem(key); return; }
+    const point = {...cleanerCheckpoint(), ...patch, deleted: state.deleted,
+      tagged: state.tagged, tailIds: state.protectedTailIds, logs: state.logs};
+    sessionStorage.setItem(key, JSON.stringify(point));
+  }
+  function stageCleanerAction(pending) {
+    if (cleanerCheckpoint()?.pending) throw new Error('上次操作仍待核实，未再次提交');
+    saveCleanerCheckpoint({pending});
+  }
+  async function recoverCleanerCheckpoint(point) {
+    const drawer = context().drawer;
+    if (deletionDialog() || Array.from(document.querySelectorAll('[role="dialog"],[role="alertdialog"],.main-vmok-plugin-modal__wrap,.main-vmok-plugin-oc-popover-text__content'))
+      .some(el => visible(el) && !el.contains(drawer) && text(el).includes('AIGC跑量') &&
+        Array.from(el.querySelectorAll('button')).some(b => visible(b) && ['确认','确定'].includes(text(b))))) {
+      throw new Error('请先核实并关闭千川删除或标签弹窗');
+    }
+    const checked = Array.from(table().body.querySelectorAll('tbody tr input[type="checkbox"]')).some(el => el.checked);
+    if (checked || /已选\s*\d+\s*个\s*视频/.test(text(drawer))) {
+      const allowed = point.selection || [];
+      const ids = selectedRows().map(row => row.id);
+      if (pageInfo().page !== point.page || !ids.length || !selectionMatches(ids) ||
+          ids.some(id => !allowed.includes(id))) throw new Error('请先手动清除页面残留的勾选');
+      await clearSelection();
+    }
+    await ensureFilter();
+    await ensureSizeSort();
+    if (point.page == null) await lastPage();
+    else await restoreScanPage(point.page);
+    const pending = point.pending;
+    if (!pending) return;
+    if (pending.kind === 'delete') {
+      const evidence = await deletionEvidence(pending.ids, pending.total, 4000);
+      if (!evidence.confirmed) throw new Error('上次删除结果未核实：' + pending.ids.join(', ') + '；' + evidence.observed + '。不会重复删除');
+      state.deleted = [...new Set([...state.deleted, ...pending.ids])];
+      saveCleanerCheckpoint({pending: null, selection: []});
+    } else {
+      if (!rows().some(r => r.id === pending.id && r.label.includes('AIGC跑量'))) {
+        throw new Error('素材 ' + pending.id + ' 的 AIGC 标签尚未核实，不会重复添加');
+      }
+      state.tagged = [...new Set([...state.tagged, pending.id])];
+      saveCleanerCheckpoint({pending: null, selection: [], fallbackIds: []});
+    }
+    log('已从素材列表核实上次操作，继续剩余额度');
+  }
+  function closePausedRun() {
+    if (state.busy || state.pendingApproval) return;
+    try {
+      context();
+      if (cleanerCheckpoint()?.pending) throw new Error('上次删除或补标尚未核实，请核对后继续本轮');
+      if (!window.confirm('结束本轮？已删除或补标的素材会保留当前状态。')) return;
+      saveCleanerCheckpoint(null);
+      phase('已结束本轮，可以重新检查末页');
+    } catch (error) { phase(error.message); }
+  }
+  async function run(dry, resume = false) {
+    if (state.busy || state.pendingApproval) return;
     try {
       if (!state.lock) throw new Error('\u8BF7\u5148\u9501\u5B9A\u5F53\u524D\u8BA1\u5212');
       if (!/^\d{4}-\d{2}-\d{2}$/.test(cfg.cutoff) || Number.isNaN(Date.parse(cfg.cutoff + 'T00:00:00'))) throw new Error('\u8BF7\u8F93\u5165\u6709\u6548\u7684\u622A\u6B62\u65E5\u671F');
       if (!Number.isInteger(cfg.quota) || cfg.quota < 1 || cfg.quota > MAX_QUOTA) throw new Error('\u5220\u9664\u6570\u91CF\u987B\u4E3A 1\u2014' + MAX_QUOTA);
       context();
-      if (!dry) {
+      const point = cleanerCheckpoint();
+      if (resume && !point) throw new Error('当前计划没有可继续的本轮记录');
+      if (point && !resume) throw new Error('本轮尚未结束，请使用「继续本轮」');
+      if (resume && (point.cutoff !== cfg.cutoff || point.quota !== cfg.quota ||
+          point.dateRange !== new URL(location.href).searchParams.get('dateRange'))) {
+        throw new Error('请恢复原截止日、删除上限和千川数据日期后再继续');
+      }
+      if (!dry && !resume) {
         const ok = await requestRunApproval();
         if (!ok) return;
         context();
       }
       state.busy = true; state.stop = false; state.deleted = []; state.tagged = []; state.skipped = []; state.failed = []; state.protectedTailIds = []; state.logs = [];
       state.viewport = { width: innerWidth, height: innerHeight, scale: devicePixelRatio, screenWidth: screen.width, screenHeight: screen.height };
-      phase(dry ? '\u6F14\u7EC3\uFF1A\u5B9A\u4F4D\u672B\u9875\u5E76\u68C0\u67E5\uFF0C\u4E0D\u52FE\u9009\u6216\u5220\u9664' : '\u6B63\u5F0F\u6267\u884C\uFF1A\u51C6\u5907\u7D20\u6750\u9875');
-      await prepare();
+      phase(resume ? '正在核对上次进度' : dry ? '\u6F14\u7EC3\uFF1A\u5B9A\u4F4D\u672B\u9875\u5E76\u68C0\u67E5\uFF0C\u4E0D\u52FE\u9009\u6216\u5220\u9664' : '\u6B63\u5F0F\u6267\u884C\uFF1A\u51C6\u5907\u7D20\u6750\u9875');
+      if (resume) {
+        state.deleted = point.deleted; state.tagged = point.tagged;
+        state.protectedTailIds = point.tailIds; state.logs = point.logs;
+        await recoverCleanerCheckpoint(point);
+        log('从本轮素材页继续，已删除 ' + state.deleted.length + '/' + cfg.quota + ' 条');
+      } else {
+        if (!dry) saveCleanerCheckpoint({cutoff: cfg.cutoff, quota: cfg.quota, page: null,
+          dateRange: new URL(location.href).searchParams.get('dateRange'), selection: [], fallbackIds: [], pending: null});
+        await prepare();
+      }
       if (dry) {
         const rr = rows();
         protectFinalPageTail(pageInfo(), rr);
@@ -783,7 +874,7 @@
         return;
       }
       let visits = 0, scanned = 0, reason = '', resumePage = null;
-      const singleFallbackIds = new Set();
+      const singleFallbackIds = new Set(cleanerCheckpoint()?.fallbackIds || []);
       while (state.deleted.length < cfg.quota) {
         assertRun();
         if (++visits > 1000) throw new Error('\u626B\u63CF\u8D85\u8FC71000\u8F6E\uFF0C\u5DF2\u505C\u6B62\u4EE5\u907F\u514D\u5FAA\u73AF');
@@ -793,12 +884,14 @@
         resumePage = null;
         const info = pageInfo(), current = rows();
         protectFinalPageTail(info, current);
+        saveCleanerCheckpoint({page: info.page, selection: [], fallbackIds: [...singleFallbackIds]});
         scanned++;
         const candidates = current.filter(eligible).slice(0, cfg.quota - state.deleted.length);
         if (candidates.length) {
           const fallback = candidates.find(r => singleFallbackIds.has(r.id));
           if (fallback) {
             log('\u7B2C ' + info.page + '/' + info.pages + ' \u9875\u9010\u6761\u6392\u67E5 AIGC \u8B66\u544A\u7EC4\u7D20\u6750 ' + fallback.id);
+            saveCleanerCheckpoint({selection: [fallback.id]});
             const result = await processOne(fallback.id);
             singleFallbackIds.delete(fallback.id);
             if (result === 'tagged') {
@@ -809,15 +902,18 @@
           } else {
             const ids = candidates.map(r => r.id);
             log('\u7B2C ' + info.page + '/' + info.pages + ' \u9875\u62DF\u6279\u91CF\u5220\u9664 ' + ids.length + ' \u6761\uFF1B\u9010\u6761\u6838\u5BF9 ID\u3001\u65E5\u671F\u3001\u6210\u672C\u548C\u6807\u7B7E');
+            saveCleanerCheckpoint({selection: ids});
             const result = await processBatch(ids);
             if (result === 'aigc') ids.forEach(id => singleFallbackIds.add(id));
             else resumePage = 'last';
           }
+          saveCleanerCheckpoint({fallbackIds: [...singleFallbackIds]});
           continue;
         }
         if (info.page <= 1) { reason = '\u5DF2\u626B\u63CF\u5230\u7B2C1\u9875\uFF0C\u65E0\u66F4\u591A\u7B26\u5408\u6761\u4EF6\u7684\u7D20\u6750\uFF1B\u672B\u9875\u4FDD\u7559\u7D20\u6750\u4E0D\u4F1A\u5220\u9664'; break; }
         if (!(await move('prev'))) { reason = '\u65E0\u6CD5\u7EE7\u7EED\u7FFB\u4E0A\u4E00\u9875'; break; }
       }
+      saveCleanerCheckpoint(null);
       if (!reason) reason = '\u8FBE\u5230\u5220\u9664\u6570\u91CF\u4E0A\u9650 ' + cfg.quota + ' \u6761';
       phase('\u5DF2\u505C\u6B62\uFF1A' + reason);
       log('\u626B\u63CF\u9875\u6B21 ' + scanned + '\uFF0C\u5220\u9664 ' + state.deleted.length + ' \u6761\uFF0C\u8865\u6807 ' + state.tagged.length + ' \u6761');
@@ -898,7 +994,19 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       right: Math.max(0, window.innerWidth - view.left - view.width),
       defaultRatio: range ? clamp((initialTop - min) / range, 0, 1) : 0};
   }
+  function placePanel() {
+    const view = viewport();
+    const style = shadow.host.style;
+    // Layout in unzoomed CSS pixels, then anchor to the visible part of the page.
+    const margin = Math.min(12, (view.width / view.unit) / 12, (view.height / view.unit) / 12);
+    style.setProperty('--qc-panel-right', (window.innerWidth - view.left - view.width + margin * view.unit) + 'px');
+    style.setProperty('--qc-panel-top', (view.top + margin * view.unit) + 'px');
+    style.setProperty('--qc-panel-scale', String(view.unit));
+    style.setProperty('--qc-panel-width', Math.min(380, view.width / view.unit - margin * 2) + 'px');
+    style.setProperty('--qc-panel-height', (view.height / view.unit - margin * 2) + 'px');
+  }
   function place() {
+    placePanel();
     if (!launcher?.isConnected) return;
     const mode = orientation(), size = geometry(), saved = read()[mode];
     const ratio = typeof saved === 'number' && Number.isFinite(saved) ? clamp(saved, 0, 1) : size.defaultRatio;
@@ -926,16 +1034,17 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       desired[i].top = Math.min(desired[i].top, i === desired.length - 1
         ? size.min + size.range : desired[i + 1].top - distance);
     const top = desired.find(item => item.slot === slot).top;
-    launcher.style.transform = 'none';
+    launcher.style.transform = 'scale(' + size.unit + ')';
+    launcher.style.transformOrigin = 'top right';
     launcher.style.boxSizing = 'border-box';
-    launcher.style.width = (34 * size.unit) + 'px';
-    launcher.style.fontSize = (12 * size.unit) + 'px';
-    launcher.style.padding = (8 * size.unit) + 'px ' + (5 * size.unit) + 'px';
-    launcher.style.letterSpacing = (2 * size.unit) + 'px';
+    launcher.style.width = '34px';
+    launcher.style.fontSize = '12px';
+    launcher.style.padding = '8px 5px';
+    launcher.style.letterSpacing = '2px';
     launcher.style.right = size.right + 'px';
-    launcher.style.height = size.height + 'px';
-    launcher.style.minHeight = size.height + 'px';
-    launcher.style.maxHeight = size.height + 'px';
+    launcher.style.height = (size.height / size.unit) + 'px';
+    launcher.style.minHeight = (size.height / size.unit) + 'px';
+    launcher.style.maxHeight = (size.height / size.unit) + 'px';
     launcher.style.top = top + 'px';
     launcher.style.bottom = 'auto';
     launcher.style.touchAction = 'none';
@@ -1004,7 +1113,7 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
     *{box-sizing:border-box}button,input{font:inherit}button{cursor:pointer;transition:background .16s,border-color .16s,box-shadow .16s}button:disabled{opacity:.48;cursor:not-allowed}
     .launcher{pointer-events:auto;position:fixed;right:0;z-index:2147483645;width:34px;min-height:116px;writing-mode:vertical-rl;letter-spacing:2px;background:rgba(0,122,255,.95);color:#fff;border:1px solid rgba(255,255,255,.38);border-right:0;border-radius:13px 0 0 13px;padding:11px 7px;box-shadow:0 6px 20px rgba(0,72,158,.22);font-size:12px;font-weight:600;cursor:grab;touch-action:none;user-select:none;backdrop-filter:blur(12px)}
     .launcher:hover{background:#0066d6;width:38px}
-    .panel{pointer-events:auto;position:fixed;right:12px;top:12px;width:min(380px,calc(100vw - 24px));height:calc(100vh - 24px);max-height:calc(100dvh - 24px);overflow:hidden;display:flex;flex-direction:column;z-index:2147483646;background:rgba(250,251,253,.97);border:1px solid rgba(200,208,220,.7);border-radius:18px;box-shadow:0 18px 48px rgba(28,41,62,.2),0 2px 8px rgba(28,41,62,.08);backdrop-filter:blur(18px);font-size:13px;line-height:1.5}
+    .panel{pointer-events:auto;position:fixed;right:var(--qc-panel-right,12px);top:var(--qc-panel-top,12px);width:var(--qc-panel-width,380px);height:var(--qc-panel-height,calc(100vh - 24px));transform:scale(var(--qc-panel-scale,1));transform-origin:top right;overflow:hidden;display:flex;flex-direction:column;z-index:2147483646;background:rgba(250,251,253,.97);border:1px solid rgba(200,208,220,.7);border-radius:18px;box-shadow:0 18px 48px rgba(28,41,62,.2),0 2px 8px rgba(28,41,62,.08);backdrop-filter:blur(18px);font-size:13px;line-height:1.5}
     .head{flex:none;display:flex;align-items:center;justify-content:space-between;min-height:58px;padding:12px 14px 12px 18px;color:#1d1d1f;background:rgba(255,255,255,.92);border-bottom:1px solid #e5e9ef}.head strong{font-size:15px;letter-spacing:.2px;font-weight:700}.head strong:before{content:"";display:inline-block;width:9px;height:9px;margin-right:9px;border-radius:50%;background:#007aff;box-shadow:0 0 0 4px #eaf3ff;vertical-align:1px}.head small{display:block;margin:3px 0 0 18px;color:#7c8595;font-size:11px;font-weight:400}.head button{width:30px;height:30px;display:grid;place-items:center;color:#596272;background:#f0f2f5;border:0;border-radius:50%;font-size:21px;line-height:1}.head button:hover{background:#e3e7ed;color:#1d1d1f}
     .body{min-height:0;flex:1;overflow-y:auto;overscroll-behavior:contain;padding:14px 16px 18px;scrollbar-color:#c8d0db transparent;scrollbar-width:thin}.card{background:#fff;border:1px solid #e5e9ef;border-radius:13px;padding:11px 12px;margin-bottom:12px;line-height:1.55;overflow-wrap:anywhere;box-shadow:0 1px 3px rgba(24,44,72,.035)}.eyebrow{font-size:12px;font-weight:700;letter-spacing:.4px;color:#596273;margin-bottom:7px}.title{font-weight:700;overflow-wrap:anywhere}.muted{font-size:12px;color:#7c8595}.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}.field{display:block;min-width:0;margin:5px 0;color:#505b6d;font-size:12px}.field input{display:block;width:100%;min-height:37px;margin-top:5px;border:1px solid #d6dde7;border-radius:10px;padding:8px 10px;background:#fff;color:#1d1d1f;font-size:13px;outline:none}.field input:focus{border-color:#007aff;box-shadow:0 0 0 3px rgba(0,122,255,.12)}
     .row{display:flex;gap:8px;margin-top:10px}.btn{border:1px solid #cbdcff;border-radius:10px;padding:9px 11px;background:#fff;color:#0066d6;font-weight:600;flex:1}.btn:hover:not(:disabled){background:#edf5ff}.btn.primary{background:#007aff;color:#fff;border-color:#007aff}.btn.primary:hover:not(:disabled){background:#0069df}.btn.stop{color:#d33b32;border-color:#ffd4d1;flex:0 0 55px}.btn.stop:hover:not(:disabled){background:#fff2f0}.hint{font-size:11px;color:#697386;line-height:1.55;margin-top:8px}.warn{color:#a14b0c}.status{padding:10px 11px;background:#eaf3ff;border:1px solid #d9eaff;border-radius:10px;color:#175aaf;font-weight:700;overflow-wrap:anywhere}.log{height:110px;overflow:auto;background:#17202f;color:#dbe8fa;border-radius:11px;padding:9px 10px;white-space:pre-wrap;font:11px/1.55 Consolas,monospace}.report{max-height:190px;overflow:auto;white-space:pre-wrap;background:#fff;border:1px solid #e5e9ef;border-radius:11px;padding:10px;font:11px/1.5 Consolas,monospace;overflow-wrap:anywhere}
@@ -1018,10 +1127,10 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
     const planLabel = live ? '\u76F4\u64AD\u5728\u6295\u8BA1\u5212' : '\u5546\u54C1\u5728\u6295\u8BA1\u5212';
     const sourceLabel = live ? '\u89C6\u9891\u7C7B\u578B\u4E3A\u81EA\u9009\u6295\u653E\u89C6\u9891' : '\u7D20\u6750\u7C7B\u578B\u4E3A\u81EA\u9009\u6295\u653E\u7D20\u6750';
     shadow.innerHTML = css + `<button class="launcher" id="launch" title="\u70B9\u51FB\u5C55\u5F00\uFF0C\u62D6\u52A8\u8C03\u6574\u4F4D\u7F6E" aria-label="\u5C55\u5F00\u5343\u5DDD\u96F6\u6D88\u8017\u7D20\u6750\u6E05\u7406\u52A9\u624B" style="display:${state.panelOpen?'none':'block'};top:${escapeHTML(state.launcherTop)}%">\u6E05\u7406\u52A9\u624B</button>
-      <div class="panel" style="display:${state.panelOpen?'flex':'none'}"><div class="head"><div><strong>\u5343\u5DDD\u96F6\u6D88\u8017\u7D20\u6750\u6E05\u7406\u52A9\u624B</strong><small>v1.1.9 \u5B89\u5353\u7248 \u00B7 ${planLabel} \u00B7 \u81EA\u9009\u6295\u653E\u89C6\u9891</small></div><button id="close" title="\u6700\u5C0F\u5316" aria-label="\u6700\u5C0F\u5316\u52A9\u624B">\u2212</button></div><div class="body">
+      <div class="panel" style="display:${state.panelOpen?'flex':'none'}"><div class="head"><div><strong>\u5343\u5DDD\u96F6\u6D88\u8017\u7D20\u6750\u6E05\u7406\u52A9\u624B</strong><small>v1.1.10 \u5B89\u5353\u7248 \u00B7 ${planLabel} \u00B7 \u81EA\u9009\u6295\u653E\u89C6\u9891</small></div><button id="close" title="\u6700\u5C0F\u5316" aria-label="\u6700\u5C0F\u5316\u52A9\u624B">\u2212</button></div><div class="body">
       <div class="card"><div class="eyebrow">\u9501\u5B9A\u8D26\u6237 / \u5F53\u524D\u8BA1\u5212</div><div class="title">${lock?escapeHTML(lock.accountName):'\u5C1A\u672A\u9501\u5B9A'}</div><div class="muted">${lock?escapeHTML(lock.accountId):''}</div><div class="title" style="margin-top:6px">${lock?escapeHTML(lock.planName):'\u8BF7\u5148\u6253\u5F00\u7D20\u6750\u9875'}</div><div class="muted">${lock?escapeHTML(lock.planId):''}</div><div class="row"><button class="btn" id="lock" ${state.busy?'disabled':''}>\u9501\u5B9A\u5F53\u524D\u8BA1\u5212</button></div></div>
       <div class="card"><div class="eyebrow">\u7B5B\u9009\u6761\u4EF6</div><div class="grid"><label class="field">\u521B\u5EFA\u65E5\u671F\u4E25\u683C\u65E9\u4E8E<input id="cutoff" type="date" value="${escapeHTML(cfg.cutoff)}" ${state.busy?'disabled':''}></label><label class="field">\u6700\u591A\u5220\u9664\u6761\u6570<input id="quota" type="number" min="1" max="${MAX_QUOTA}" step="1" value="${escapeHTML(cfg.quota)}" ${state.busy?'disabled':''}></label></div><div class="hint">${live?'\u76F4\u64AD\u7D20\u6750\u2192\u89C6\u9891\u9875\u7B5B\u9009\u201C\u89C6\u9891\u7C7B\u578B\uFF1A\u81EA\u9009\u6295\u653E\u89C6\u9891\u201D':'\u5546\u54C1\u7D20\u6750\u9875\u7B5B\u9009\u201C\u7D20\u6750\u7C7B\u578B\uFF1A\u81EA\u9009\u6295\u653E\u201D'}\uFF0C20 \u6761/\u9875\uFF1B\u6309<strong>\u7EFC\u5408\u6210\u672C(\u5143)\u964D\u5E8F</strong>\u4ECE\u672B\u9875\u5F80\u524D\u68C0\u67E5\u3002\u4EC5\u5220\u6210\u672C\u4E3A\u7A7A\uFF08-\u3001--\u3001\u6682\u65E0\u6570\u636E\u6216\u7A7A\u767D\uFF09\u3001\u65E5\u671F\u65E9\u4E8E\u622A\u6B62\u65E5\u3001\u4E14\u65E0 AIGC\u8DD1\u91CF \u6807\u7B7E\u7684\u7D20\u6750\u3002</div></div>
-      <div class="card"><div class="eyebrow">\u6267\u884C</div><div class="hint warn">\u5148\u6F14\u7EC3\u67E5\u770B\u672B\u9875\u5019\u9009\u3002\u672B\u9875\u5168\u90E8\u5408\u683C\u65F6\u4FDD\u7559\u6700\u540E\u4E00\u6761\uFF0C\u907F\u514D\u5220\u9664\u540E\u7A7A\u9875\uFF1B\u5176\u4F59\u5408\u683C\u7D20\u6750\u4F18\u5148\u6574\u6279\u5904\u7406\u3002\u51FA\u73B0 AIGC \u8B66\u544A\u5219\u53D6\u6D88\u672C\u6279\uFF0C\u9010\u6761\u6392\u67E5\uFF1B\u627E\u5230\u5E76\u8865\u6807 AIGC \u7D20\u6750\u540E\u6062\u590D\u6279\u91CF\u5220\u9664\uFF0C\u518D\u9047\u8B66\u544A\u624D\u91CD\u65B0\u6392\u67E5\u3002\u63D0\u793A\u4E0D\u660E\u786E\u6216\u5220\u9664\u7ED3\u679C\u672A\u786E\u8BA4\u65F6\u7ACB\u5373\u505C\u6B62\uFF0C\u4E0D\u91CD\u590D\u63D0\u4EA4\u3002</div><div class="row"><button class="btn" id="preview" ${state.busy?'disabled':''}>\u68C0\u67E5\u672B\u9875</button><button class="btn primary" id="start" ${state.busy?'disabled':''}>\u5F00\u59CB\u6E05\u7406</button><button class="btn stop" id="stop" ${state.busy?'':'disabled'}>\u505C\u6B62</button></div></div>
+      <div class="card"><div class="eyebrow">\u6267\u884C</div><div class="hint warn">\u5148\u6F14\u7EC3\u67E5\u770B\u672B\u9875\u5019\u9009\u3002\u672B\u9875\u5168\u90E8\u5408\u683C\u65F6\u4FDD\u7559\u6700\u540E\u4E00\u6761\uFF0C\u907F\u514D\u5220\u9664\u540E\u7A7A\u9875\uFF1B\u5176\u4F59\u5408\u683C\u7D20\u6750\u4F18\u5148\u6574\u6279\u5904\u7406\u3002\u51FA\u73B0 AIGC \u8B66\u544A\u5219\u53D6\u6D88\u672C\u6279\uFF0C\u9010\u6761\u6392\u67E5\uFF1B\u627E\u5230\u5E76\u8865\u6807 AIGC \u7D20\u6750\u540E\u6062\u590D\u6279\u91CF\u5220\u9664\uFF0C\u518D\u9047\u8B66\u544A\u624D\u91CD\u65B0\u6392\u67E5\u3002\u63D0\u793A\u4E0D\u660E\u786E\u6216\u5220\u9664\u7ED3\u679C\u672A\u786E\u8BA4\u65F6\u7ACB\u5373\u505C\u6B62\uFF0C\u4E0D\u91CD\u590D\u63D0\u4EA4\u3002</div><div class="row"><button class="btn" id="preview" ${state.busy?'disabled':''}>\u68C0\u67E5\u672B\u9875</button><button class="btn primary" id="start" ${state.busy || cleanerCheckpoint()?'disabled':''}>\u5F00\u59CB\u6E05\u7406</button><button class="btn stop" id="stop" ${state.busy?'':'disabled'}>\u505C\u6B62</button></div>${cleanerCheckpoint() ? `<div class="row"><button class="btn primary" id="resume" ${state.busy?'disabled':''}>继续本轮</button><button class="btn" id="close-run" ${state.busy?'disabled':''}>结束本轮</button></div>` : ''}</div>
       <div class="card"><div class="eyebrow">\u6267\u884C\u72B6\u6001</div><div class="status">${escapeHTML(state.phase)}</div><div class="hint">\u672C\u8F6E\u5DF2\u5220 ${state.deleted.length} \u6761 \u00B7 \u8865\u6807 AIGC ${state.tagged.length} \u6761</div></div>
       <div class="card"><div class="eyebrow">\u6267\u884C\u8BB0\u5F55</div><div class="log">${escapeHTML(state.logs.slice(-35).join('\n')||'\u5C1A\u65E0\u8BB0\u5F55')}</div></div>
       <div class="card"><div class="eyebrow">\u7ED3\u679C\u62A5\u544A</div><div class="report">${escapeHTML(state.lastReport||'\u6267\u884C\u540E\u751F\u6210\u62A5\u544A')}</div><div class="row"><button class="btn" id="copy">\u590D\u5236\u62A5\u544A</button></div></div>
@@ -1039,6 +1148,10 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
     shadow.querySelector('#lock').onclick = lockCurrent;
     shadow.querySelector('#preview').onclick = () => run(true);
     shadow.querySelector('#start').onclick = () => run(false);
+    const resume = shadow.querySelector('#resume');
+    if (resume) resume.onclick = () => run(false, true);
+    const closeRun = shadow.querySelector('#close-run');
+    if (closeRun) closeRun.onclick = closePausedRun;
     shadow.querySelector('#stop').onclick = () => { state.stop = true; phase('\u5DF2\u8BF7\u6C42\u505C\u6B62\uFF1B\u5F53\u524D\u52A8\u4F5C\u7ED3\u675F\u540E\u505C\u6B62'); };
     shadow.querySelector('#copy').onclick = () => { if (state.lastReport) GM_setClipboard(state.lastReport); };
     shadow.querySelector('#cutoff').onchange = e => { cfg.cutoff = e.target.value; saveCfg(); };
@@ -1051,7 +1164,6 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
     if (!event.persisted) return;
     if (state.pendingApproval) closeRunApproval(false);
     state.panelOpen = false;
-    state.busy = false;
     state.stop = true;
     state.phase = '\u9875\u9762\u5DF2\u6062\u590D\uFF1B\u8BF7\u91CD\u65B0\u9501\u5B9A\u8BA1\u5212\u540E\u518D\u6267\u884C';
     render();

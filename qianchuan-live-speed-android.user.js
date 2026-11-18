@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Live Speed Scheduler (Android)
 // @namespace    local.qianchuan.live-speed-scheduler
-// @version      1.2.13
+// @version      1.2.14
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js
 // @description  Android edition based on Windows v1.2.3: scheduled live tasks, automatic verification and local takeover.
@@ -1309,7 +1309,19 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       right: Math.max(0, window.innerWidth - view.left - view.width),
       defaultRatio: range ? clamp((initialTop - min) / range, 0, 1) : 0};
   }
+  function placePanel() {
+    const view = viewport();
+    const style = shadow.host.style;
+    // Layout in unzoomed CSS pixels, then anchor to the visible part of the page.
+    const margin = Math.min(12, (view.width / view.unit) / 12, (view.height / view.unit) / 12);
+    style.setProperty('--qc-panel-right', (window.innerWidth - view.left - view.width + margin * view.unit) + 'px');
+    style.setProperty('--qc-panel-top', (view.top + margin * view.unit) + 'px');
+    style.setProperty('--qc-panel-scale', String(view.unit));
+    style.setProperty('--qc-panel-width', Math.min(390, view.width / view.unit - margin * 2) + 'px');
+    style.setProperty('--qc-panel-height', (view.height / view.unit - margin * 2) + 'px');
+  }
   function place() {
+    placePanel();
     if (!launcher?.isConnected) return;
     const mode = orientation(), size = geometry(), saved = read()[mode];
     const ratio = typeof saved === 'number' && Number.isFinite(saved) ? clamp(saved, 0, 1) : size.defaultRatio;
@@ -1337,16 +1349,17 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       desired[i].top = Math.min(desired[i].top, i === desired.length - 1
         ? size.min + size.range : desired[i + 1].top - distance);
     const top = desired.find(item => item.slot === slot).top;
-    launcher.style.transform = 'none';
+    launcher.style.transform = 'scale(' + size.unit + ')';
+    launcher.style.transformOrigin = 'top right';
     launcher.style.boxSizing = 'border-box';
-    launcher.style.width = (34 * size.unit) + 'px';
-    launcher.style.fontSize = (12 * size.unit) + 'px';
-    launcher.style.padding = (8 * size.unit) + 'px ' + (5 * size.unit) + 'px';
-    launcher.style.letterSpacing = (2 * size.unit) + 'px';
+    launcher.style.width = '34px';
+    launcher.style.fontSize = '12px';
+    launcher.style.padding = '8px 5px';
+    launcher.style.letterSpacing = '2px';
     launcher.style.right = size.right + 'px';
-    launcher.style.height = size.height + 'px';
-    launcher.style.minHeight = size.height + 'px';
-    launcher.style.maxHeight = size.height + 'px';
+    launcher.style.height = (size.height / size.unit) + 'px';
+    launcher.style.minHeight = (size.height / size.unit) + 'px';
+    launcher.style.maxHeight = (size.height / size.unit) + 'px';
     launcher.style.top = top + 'px';
     launcher.style.bottom = 'auto';
     launcher.style.touchAction = 'none';
@@ -1413,12 +1426,12 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
   const css = `<style>
     :host{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC","Microsoft YaHei",sans-serif;color:#1d1d1f}*{box-sizing:border-box}button,input,select{font:inherit}button{cursor:pointer}button:disabled{opacity:.5;cursor:not-allowed}
     .launcher{pointer-events:auto;position:fixed;right:0;z-index:2147483645;width:34px;min-height:118px;writing-mode:vertical-rl;letter-spacing:2px;background:rgba(0,122,255,.95);color:#fff;border:1px solid rgba(255,255,255,.4);border-right:0;border-radius:13px 0 0 13px;padding:11px 7px;box-shadow:0 6px 20px rgba(0,72,158,.23);font-size:12px;font-weight:600;cursor:grab;touch-action:none;user-select:none;backdrop-filter:blur(12px)}
-    .panel{pointer-events:auto;position:fixed;right:12px;top:12px;width:min(390px,calc(100vw - 24px));height:calc(100vh - 24px);max-height:calc(100dvh - 24px);overflow:hidden;display:flex;flex-direction:column;z-index:2147483646;background:rgba(250,251,253,.97);border:1px solid rgba(200,208,220,.7);border-radius:18px;box-shadow:0 18px 48px rgba(28,41,62,.2),0 2px 8px rgba(28,41,62,.08);backdrop-filter:blur(18px);font-size:13px;line-height:1.5}
+    .panel{pointer-events:auto;position:fixed;right:var(--qc-panel-right,12px);top:var(--qc-panel-top,12px);width:var(--qc-panel-width,390px);height:var(--qc-panel-height,calc(100vh - 24px));transform:scale(var(--qc-panel-scale,1));transform-origin:top right;overflow:hidden;display:flex;flex-direction:column;z-index:2147483646;background:rgba(250,251,253,.97);border:1px solid rgba(200,208,220,.7);border-radius:18px;box-shadow:0 18px 48px rgba(28,41,62,.2),0 2px 8px rgba(28,41,62,.08);backdrop-filter:blur(18px);font-size:13px;line-height:1.5}
     .head{flex:none;display:flex;align-items:center;justify-content:space-between;min-height:58px;padding:12px 14px 12px 18px;background:rgba(255,255,255,.92);border-bottom:1px solid #e5e9ef}.head strong{font-size:15px}.head strong:before{content:"";display:inline-block;width:9px;height:9px;margin-right:9px;border-radius:50%;background:#007aff;box-shadow:0 0 0 4px #eaf3ff;vertical-align:1px}.head small{display:block;margin:3px 0 0 18px;color:#7c8595;font-size:11px}.head button{width:30px;height:30px;border:0;border-radius:50%;background:#f0f2f5;color:#596272;font-size:21px}
     .body{min-height:0;flex:1;overflow-y:auto;padding:14px 16px 18px;scrollbar-color:#c8d0db transparent;scrollbar-width:thin}.card{background:#fff;border:1px solid #e5e9ef;border-radius:13px;padding:11px 12px;margin-bottom:12px;box-shadow:0 1px 3px rgba(24,44,72,.035);overflow-wrap:anywhere}.eyebrow{font-size:12px;font-weight:700;color:#596273;margin-bottom:7px}.title{font-weight:700}.muted,.hint{font-size:11px;color:#697386;line-height:1.55}.hint{margin-top:8px}.warn{color:#a14b0c}.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.field{min-width:0;display:block;margin:5px 0;color:#505b6d;font-size:12px}.field input,.field select{display:block;width:100%;min-height:37px;margin-top:5px;border:1px solid #d6dde7;border-radius:10px;padding:8px 10px;background:#fff;color:#1d1d1f;font-size:13px}.field input:focus,.field select:focus{outline:none;border-color:#007aff;box-shadow:0 0 0 3px rgba(0,122,255,.12)}
     .row{display:flex;gap:8px;margin-top:10px}.btn{border:1px solid #cbdcff;border-radius:10px;padding:9px 11px;background:#fff;color:#0066d6;font-weight:600;flex:1}.btn:hover:not(:disabled){background:#edf5ff}.btn.primary{background:#007aff;color:#fff;border-color:#007aff}.btn.stop{color:#d33b32;border-color:#ffd4d1;flex:0 0 56px}.status{padding:10px 11px;background:#eaf3ff;border:1px solid #d9eaff;border-radius:10px;color:#175aaf;font-weight:700}.metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.metric{min-width:0;padding:10px;background:#f7f9fc;border:1px solid #e6ebf2;border-radius:10px}.metric span{display:block;color:#6e7787;font-size:11px}.metric strong{display:block;margin-top:3px;color:#233044;font-size:15px;font-variant-numeric:tabular-nums}.metric strong.accent{color:#006ee6;font-size:18px;letter-spacing:.4px}.log{height:110px;overflow:auto;background:#17202f;color:#dbe8fa;border-radius:11px;padding:9px 10px;white-space:pre-wrap;font:11px/1.55 Consolas,monospace}.report{max-height:180px;overflow:auto;white-space:pre-wrap;border:1px solid #e5e9ef;border-radius:11px;padding:10px;font:11px/1.5 Consolas,monospace}
     @media (pointer:coarse){.btn{min-height:44px}.field input,.field select{min-height:42px;font-size:14px}.head button{width:36px;height:36px}}
-    .body{overscroll-behavior:contain;-webkit-overflow-scrolling:touch}.panel{max-height:calc(100dvh - 24px)}
+    .body{overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
   </style>`;
   function render() {
     const oldBody = shadow.querySelector('.body');
@@ -1435,7 +1448,7 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
     const countdown = displayNext ? durationText(displayNext - Date.now()) : '\u2014';
     const remainingCents = run ? Math.max(0, run.capCents - (run.lastTodayCents || 0)) : null;
     shadow.innerHTML = css + `<button id="launch" class="launcher" title="\u70B9\u51FB\u5C55\u5F00\uFF0C\u62D6\u52A8\u8C03\u6574\u4F4D\u7F6E" style="display:${state.open ? 'none' : 'block'};top:${esc(state.launcherTop)}%">\u8C03\u901F\u52A9\u624B</button>
-      <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>\u5343\u5DDD\u76F4\u64AD\u5B9A\u65F6\u8C03\u901F\u52A9\u624B</strong><small>v1.2.11 \u5B89\u5353\u7248 \u00B7 \u540E\u53F0\u5EF6\u8FDF\u81EA\u52A8\u6838\u5BF9 \u00B7 \u652F\u6301\u672C\u673A\u63A5\u7BA1 \u00B7 \u5F53\u524D\u76F4\u64AD\u8BA1\u5212 \u00B7 \u9ED8\u8BA4\u9759\u9ED8\u6700\u5C0F\u5316</small></div><button id="minimize" title="\u6700\u5C0F\u5316">\u2212</button></div><div class="body">
+      <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>\u5343\u5DDD\u76F4\u64AD\u5B9A\u65F6\u8C03\u901F\u52A9\u624B</strong><small>v1.2.14 \u5B89\u5353\u7248 \u00B7 \u540E\u53F0\u5EF6\u8FDF\u81EA\u52A8\u6838\u5BF9 \u00B7 \u652F\u6301\u672C\u673A\u63A5\u7BA1 \u00B7 \u5F53\u524D\u76F4\u64AD\u8BA1\u5212 \u00B7 \u9ED8\u8BA4\u9759\u9ED8\u6700\u5C0F\u5316</small></div><button id="minimize" title="\u6700\u5C0F\u5316">\u2212</button></div><div class="body">
       <div class="card"><div class="eyebrow">\u9501\u5B9A\u5F53\u524D\u76F4\u64AD\u8BA1\u5212</div><div class="title">${esc(lock?.planName || '\u5C1A\u672A\u9501\u5B9A')}</div><div class="muted">\u8D26\u6237 ${esc(lock?.accountId || '\u2014')} \u00B7 \u8BA1\u5212 ${esc(lock?.planId || '\u2014')}</div>${!urlContextSafeDetail() ? `<label class="field">\u5F53\u524D\u9875\u5728\u6295\u8BA1\u5212<select id="plan-choice" ${state.busy || active ? 'disabled' : ''}><option value="">\u8BF7\u9009\u62E9\u8BA1\u5212</option>${lockedOptions}</select></label>` : '<div class="hint">\u5F53\u524D\u4F4D\u4E8E\u76F4\u64AD\u8BA1\u5212\u8BE6\u60C5\u9875\uFF0C\u53EF\u76F4\u63A5\u9501\u5B9A\u8BE5\u8BA1\u5212\u3002</div>'}<div class="row"><button class="btn" id="lock" ${state.busy || active ? 'disabled' : ''}>\u9501\u5B9A\u5F53\u524D\u8BA1\u5212</button></div></div>
       <div class="card"><div class="eyebrow">\u4E00\u952E\u8C03\u901F\u53C2\u6570</div><div class="hint">\u8C03\u63A7\u5DE5\u5177\uFF1A\u4E00\u952E\u8C03\u901F \u00B7 \u8C03\u63A7\u65B9\u5F0F\uFF1A\u4E00\u952E\u8D77\u91CF \u00B7 \u8D77\u91CF\u63A2\u7D22\u76EE\u6807\uFF1A\u76F4\u64AD\u95F4\u8D2D\u4E70</div><div class="grid"><label class="field">\u5355\u6B21\u8C03\u63A7\u603B\u9884\u7B97\uFF08\u5143\uFF09<input id="budget" type="number" min="0.01" step="0.01" value="${esc(cfg.budget)}" ${state.busy || active ? 'disabled' : ''}></label><label class="field">\u8C03\u63A7\u65F6\u957F\uFF08\u5C0F\u65F6\uFF09<input id="hours" type="number" min="0.5" max="24" step="0.5" value="${esc(cfg.hours)}" ${state.busy || active ? 'disabled' : ''}></label><label class="field">\u7EED\u6295\u95F4\u9694\uFF08\u5C0F\u65F6\uFF09<input id="interval" type="number" min="0.5" max="24" step="0.5" value="${esc(cfg.intervalHours)}" ${state.busy || active ? 'disabled' : ''}></label><label class="field">\u8BE5\u8BA1\u5212\u5F53\u65E5\u4E0A\u9650\uFF08\u5143\uFF09<input id="cap" type="number" min="0.01" step="0.01" value="${esc(cfg.dailyCap)}" ${state.busy || active ? 'disabled' : ''}></label></div><div class="hint">\u4E0A\u9650\u8BA1\u5165\u5F53\u524D\u8BA1\u5212\u4ECA\u5929\u8C03\u63A7\u5217\u8868\u4E2D\u7684\u5168\u90E8\u4E00\u952E\u8C03\u901F\u4EFB\u52A1\uFF0C\u5305\u62EC\u4EBA\u5DE5\u521B\u5EFA\u7684\u4EFB\u52A1\u3002\u4E0B\u4E00\u6B21\u63D0\u4EA4\u4F1A\u8D85\u51FA\u4E0A\u9650\u65F6\u7ED3\u675F\u672C\u8F6E\u3002</div></div>
       <div class="card"><div class="eyebrow">\u6267\u884C</div><div class="hint warn">\u6BCF\u5929\u9996\u6B21\u542F\u52A8\u76F4\u63A5\u6309\u8BBE\u5B9A\u9884\u7B97\u548C\u65F6\u957F\u521B\u5EFA\uFF0C\u9996\u8F6E\u8BA1\u5165\u5F53\u65E5\u4E0A\u9650\u3002\u63D0\u4EA4\u540E\u6838\u5BF9\u65B0\u4EFB\u52A1\u548C\u4ECA\u65E5\u9884\u7B97\uFF0C\u518D\u6309\u8BBE\u5B9A\u95F4\u9694\u7EED\u6295\u3002\u5F53\u5929\u518D\u6B21\u542F\u52A8\u65F6\u5148\u6838\u5BF9\u4EFB\u52A1\u3002</div><div class="row"><button class="btn primary" id="start" ${state.busy || active ? 'disabled' : ''}>\u542F\u52A8\u5B9A\u65F6\u8C03\u901F</button><button class="btn stop" id="stop" ${run && (['scheduled', 'submitting'].includes(run.status) || (state.busy && run.takeoverCheckPending)) ? '' : 'disabled'}>\u505C\u6B62</button></div><div class="row"><button class="btn" id="takeover" ${state.busy || state.reloading || !state.lock ? 'disabled' : ''}>\u672C\u673A\u63A5\u7BA1\u5E76\u6838\u5BF9\u4ECA\u65E5\u4EFB\u52A1</button></div><div class="hint">\u6309\u5343\u5DDD\u4ECA\u65E5\u6700\u65B0\u7684\u4E00\u952E\u8D77\u91CF\u4EFB\u52A1\u6062\u590D\u5012\u8BA1\u65F6\u3002\u63A5\u7BA1\u672C\u6D4F\u89C8\u5668\u4E2D\u540C\u4E00\u8BA1\u5212\u7684\u5B9A\u65F6\uFF0C\u5176\u4ED6\u7535\u8111\u7684\u811A\u672C\u72EC\u7ACB\u8FD0\u884C\u3002</div>${run && run.status === 'needs_review' && !run.takeoverCheckPending ? '<div class="row"><button class="btn" id="reconcile">\u6838\u5BF9\u5DF2\u63D0\u4EA4\u4EFB\u52A1\u5E76\u6062\u590D\u5B9A\u65F6\uFF08\u4E0D\u91CD\u63D0\uFF09</button></div>' : ''}</div>

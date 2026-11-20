@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         视频号标准订单逐单加热助手
 // @namespace    local.channels.standard-order-reorder
-// @version      0.2.13
+// @version      0.2.14
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/%E8%A7%86%E9%A2%91%E5%8F%B7%E6%A0%87%E5%87%86%E8%AE%A2%E5%8D%95%E9%80%90%E5%8D%95%E5%8A%A0%E7%83%AD%E5%8A%A9%E6%89%8B.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/%E8%A7%86%E9%A2%91%E5%8F%B7%E6%A0%87%E5%87%86%E8%AE%A2%E5%8D%95%E9%80%90%E5%8D%95%E5%8A%A0%E7%83%AD%E5%8A%A9%E6%89%8B.user.js
-// @description  标准订单逐单追投，支持可编辑名称库、一键恢复、扫码与免验证提交
+// @description  短视频与直播标准订单逐单追投，支持名称库、扫码与免验证提交
 // @match        https://channels.weixin.qq.com/promote/*
 // @run-at       document-idle
 // @noframes
@@ -301,9 +301,14 @@
       throw new Error('追投预算须在 100～300000 元之间，且为 100 的整数倍');
     return {targetName:name,targetBudget:amount};
   }
+  function validateOrderTarget(item, target) {
+    if (item.promoteType === 'live' && target.targetBudget < 200)
+      throw new Error('直播标准订单追投预算须至少为 200 元');
+    return target;
+  }
   function queueApprovalKey() {
-    // 新版授权包含免验证直接支付；旧版存量授权须在新提示下重新确认。
-    return JSON.stringify(['submit-and-pay-v1', state.account, state.queue.map(x => [x.id, x.name, x.budget, targetName(x), targetBudget(x)])]);
+    // 新版授权包含免验证支付及直播成本保障规则，旧授权须按新提示重新确认。
+    return JSON.stringify(['submit-and-pay-v2-live-terms', state.account, state.queue.map(x => [x.id, x.name, x.budget, targetName(x), targetBudget(x)])]);
   }
   function batchApprovalActive() {
     return !!state.approvedQueueKey && state.approvedQueueKey === queueApprovalKey();
@@ -342,7 +347,8 @@
       const first = text(cells[0]);
       const id = (first.match(/\b\d{10,}_\d+\b/) || [])[0];
       if (!id) return null;
-      const name = text(cells[0].querySelector('.text-sm.font-medium.text-fg-0')) || first.split('短视频加热')[0].trim();
+      const name = text(cells[0].querySelector('.text-sm.font-medium.text-fg-0')) || first.split(/短视频加热|直播加热/)[0].trim();
+      const promoteType = first.includes('直播加热') ? 'live' : first.includes('短视频加热') ? 'feed' : '';
       const progress = text(cells[1]).normalize('NFKC').match(/^¥\s*([\d,.]+)\s*\/\s*¥\s*([\d,.]+)$/);
       const table = row.closest('table');
       if (!headersByTable.has(table)) {
@@ -355,7 +361,7 @@
       const roiIndexes = (header || []).flatMap((cell, index) =>
         text(cell).replace(/\s/g, '') === '直接成交ROI' ? [index] : []);
       const hasRoiColumn = roiIndexes.length === 1;
-      return { id, name, spent:parseRoi(progress?.[1]), budget:parseRoi(progress?.[2]) ?? NaN,
+      return { id, name, promoteType, spent:parseRoi(progress?.[1]), budget:parseRoi(progress?.[2]) ?? NaN,
         status: text(cells[2]), roi: hasRoiColumn ? parseRoi(text(cells[roiIndexes[0]])) : null,
         hasRoiColumn, page, row };
     }).filter(Boolean);
@@ -492,7 +498,7 @@
         firstOrderSeen.add(row.name);
         if (roiMinimum === null || matchesRoiFilter(row, roiMinimum)) {
           collect.set(row.name, {
-            id: row.id, name: row.name, spent: row.spent, budget: row.budget, status: row.status, roi: row.roi, roiMinimum, orderDay, page
+            id: row.id, name: row.name, promoteType: row.promoteType, spent: row.spent, budget: row.budget, status: row.status, roi: row.roi, roiMinimum, orderDay, page
           });
         }
       }
@@ -574,7 +580,7 @@
         }
         const draft = orderDraft(item);
         let target;
-        try { target = validateTarget(draft.name, draft.budget); }
+        try { target = validateOrderTarget(item, validateTarget(draft.name, draft.budget)); }
         catch (error) { throw new Error('“' + name + '”：' + error.message); }
         queue.push({ ...item, ...target, result:'pending' });
       }
@@ -609,6 +615,9 @@
     if (row.name !== item.name || row.budget !== item.budget)
       throw new Error('来源订单信息与锁定记录不符：页面“' + row.name + '”/¥' +
         row.budget + '，锁定“' + item.name + '”/¥' + item.budget);
+    if (item.promoteType && row.promoteType !== item.promoteType)
+      throw new Error('来源订单的短视频 / 直播类型与锁定记录不符');
+    if (!item.promoteType && row.promoteType) { item.promoteType = row.promoteType; save(); }
     if (Number.isFinite(item.roiMinimum) && !matchesRoiFilter(row, item.roiMinimum))
       throw new Error('来源订单 ' + item.id + ' 当前投放进度 ¥' + (row.spent ?? '未读到') + '/¥' + row.budget + '、直接成交 ROI ' +
         (row.roi ?? '未读到') + '，未通过消耗完成且 ROI ≥ ' + item.roiMinimum + ' 的复核');
@@ -671,13 +680,24 @@
     } catch (error) { fail(error.message); }
   }
 
+  function orderFormField(label) {
+    const fields = Array.from(document.querySelectorAll('form .finder-ui-desktop-form__control-group')).filter(field =>
+      visible(field) && Array.from(field.querySelectorAll('.finder-ui-desktop-form__label')).some(el => text(el) === label));
+    return fields.length === 1 ? fields[0] : null;
+  }
+  function orderNameInput() {
+    const field = orderFormField('订单名称');
+    const inputs = Array.from(field ? field.querySelectorAll('input[type="text"]') :
+      document.querySelectorAll('input[placeholder="输入订单名称"]')).filter(visible);
+    return inputs.length === 1 ? inputs[0] : null;
+  }
   function reviewInfo() {
     const u = new URL(location.href);
     if (u.pathname !== '/promote/pages/platform/create-order' ||
         u.searchParams.get('orderType') !== 'standard') return null;
-    const names = Array.from(document.querySelectorAll('input[placeholder="输入订单名称"]')).filter(visible);
+    const name = orderNameInput();
     const card = reviewPaymentCard();
-    if (names.length !== 1 || !card) return null;
+    if (!name || !card) return null;
     const rowFor = label => {
       const el = Array.from(card.querySelectorAll('span')).find(x => text(x) === label);
       return el ? text(el.parentElement?.parentElement) : '';
@@ -691,10 +711,11 @@
     // 读取实际抵扣金额，而非优惠券面额；例如“65.49元优惠券，抵扣 -¥65.49”。
     const couponMatch = couponRow.match(/[-−－]\s*[￥¥]\s*([\d,.]+)/) ||
       couponRow.match(/抵扣\s*[:：]?\s*[￥¥]\s*([\d,.]+)/);
-    return { name: names[0].value.trim(), budget: moneyFor('订单预算'),
+    return { name: name.value.trim(), budget: moneyFor('订单预算'),
       amount: moneyFor('需支付'), couponPresent: !!couponRow,
       couponAmount: couponMatch ? Number(couponMatch[1].replace(/,/g, '')) : NaN,
-      sourceId: u.searchParams.get('sourcePromotionId') || '' };
+      sourceId: u.searchParams.get('sourcePromotionId') || '',
+      promoteType: u.searchParams.get('promoteType') || '' };
   }
   function reviewPaymentCard() {
     const cards = Array.from(document.querySelectorAll('.finder-card')).filter(card =>
@@ -745,9 +766,37 @@
   function guardNewForm(item, info) {
     ensureAccount();
     if (!info || info.sourceId !== item.id) throw new Error('新单来源订单 ID 与锁定订单不一致');
+    verifyFormType(item, info);
     if (![item.name,targetName(item)].includes(info.name)) throw new Error('新单名称既不是来源名称也不是本轮目标名称，请人工核对');
     if (![item.budget,targetBudget(item)].includes(info.budget)) throw new Error('新单预算既不是来源预算也不是本轮目标预算，请人工核对');
     if (item.submittedAt) throw new Error('本单已经发起过提交，禁止再次填写或提交');
+  }
+  function verifyFormType(item, info) {
+    if (!['feed','live'].includes(info.promoteType)) throw new Error('仅支持短视频或直播的标准订单');
+    if (item.promoteType && item.promoteType !== info.promoteType)
+      throw new Error('新单加热类型与锁定的短视频 / 直播来源不一致');
+    const selected = Array.from(document.querySelectorAll('input[type="radio"]')).filter(el =>
+      visible(el.closest('label') || el) && el.checked && ['feed','live','product'].includes(el.value));
+    if (info.promoteType === 'live' && (selected.length !== 1 || selected[0].value !== 'live'))
+      throw new Error('直播间加热对象尚未选中，请核对页面');
+    if (selected.some(el => el.value !== info.promoteType)) throw new Error('页面选中类型与新单链接不一致');
+    validateOrderTarget({promoteType:info.promoteType}, validateTarget(targetName(item),targetBudget(item)));
+  }
+  async function fillOrderBudget(amount) {
+    const field = orderFormField('订单预算');
+    const custom = one(field ? field.querySelectorAll('.promote-custom,.promote-price-custom') :
+      document.querySelectorAll('form .promote-price-custom'), '自定义订单预算控件');
+    const label = one(custom.querySelectorAll('label'), '自定义订单预算选项');
+    label.click();
+    const input = await waitUntil(() => {
+      const inputs = Array.from(custom.querySelectorAll('input[type="text"],input[type="number"]')).filter(visible);
+      return inputs.length === 1 ? inputs[0] : null;
+    }, '自定义订单预算输入框', 6000);
+    fillPlatformInput(input, amount);
+    const done = one(Array.from(custom.querySelectorAll('button')).filter(el => text(el) === '完成'), '应用自定义订单预算');
+    await waitUntil(() => visible(done) && !done.disabled && done.getAttribute('aria-disabled') !== 'true' &&
+      !done.classList.contains('finder-ui-desktop-btn_disabled'), '预算完成按钮启用', 5000);
+    done.click();
   }
   async function prepareNewForm() {
     const item=currentItem();
@@ -755,18 +804,10 @@
     const target=validateTarget(targetName(item),targetBudget(item));
     const info=await waitUntil(()=>{const result=reviewInfo();return result&&Number.isFinite(result.budget)?result:null;},'新单来源及预算加载',15000);
     guardNewForm(item,info);
-    const name=one(document.querySelectorAll('input[placeholder="输入订单名称"]'),'新订单名称输入框');
+    const name=orderNameInput();
+    if (!name) throw new Error('未找到唯一的订单名称输入框');
     if(name.value.trim()!==target.targetName)fillPlatformInput(name,target.targetName);
-    if(info.budget!==target.targetBudget){
-      const custom=one(document.querySelectorAll('form .promote-price-custom'),'自定义订单预算控件');
-      const label=one(custom.querySelectorAll('label'),'自定义订单预算选项');
-      label.click();
-      const input=await waitUntil(()=>Array.from(custom.querySelectorAll('input[type="text"]')).find(visible),'自定义订单预算输入框',6000);
-      fillPlatformInput(input,target.targetBudget);
-      const done=one(Array.from(custom.querySelectorAll('button')).filter(x=>text(x)==='完成'),'应用自定义订单预算');
-      await waitUntil(()=>visible(done)&&!done.disabled&&!done.classList.contains('finder-ui-desktop-btn_disabled'),'预算完成按钮启用',5000);
-      done.click();
-    }
+    if(info.budget!==target.targetBudget) await fillOrderBudget(target.targetBudget);
     await waitUntil(()=>{
       const current=reviewInfo();
       if(!current||current.name!==target.targetName||current.budget!==target.targetBudget)return false;
@@ -779,12 +820,13 @@
     if (!item || !info) throw new Error('尚未读到待提交的新订单页面');
     ensureAccount();
     if (info.sourceId !== item.id) throw new Error('新单来源订单 ID 与锁定订单不一致');
+    verifyFormType(item, info);
     if (info.name !== targetName(item)) throw new Error('新单名称与本轮锁定的新名称不一致：' + (info.name || '未读到'));
     const discount = verifyReviewAmounts(info, item);
     state.reviewAmount = info.amount;
     state.reviewUrl = location.href;
     state.stage = 'review';
-    log('已核对新单：' + targetName(item) + '；来源 ' + item.id + '；订单预算 ¥' + info.budget.toFixed(2) +
+    log('已核对' + (info.promoteType === 'live' ? '直播' : '短视频') + '新单：' + targetName(item) + '；来源 ' + item.id + '；订单预算 ¥' + info.budget.toFixed(2) +
       '；优惠券抵扣 ¥' + discount.toFixed(2) + '；需支付 ¥' + info.amount.toFixed(2));
   }
   function agreementBox() {
@@ -1013,17 +1055,17 @@
       const candidates = state.matches.filter(x => x.name === name);
       const chosen=candidates.find(x=>x.id===state.choices[name]);
       const draft=chosen?orderDraft(chosen):null,editable=state.stage==='ready'&&!busy;
-      const editor=draft?`<div style="padding:7px 0"><label>新订单名称<input data-edit-id="${esc(chosen.id)}" data-edit-field="name" maxlength="25" value="${esc(draft.name)}" ${editable?'':'disabled'}></label><label>追投预算（元）<input type="number" inputmode="numeric" min="100" max="300000" step="100" data-edit-id="${esc(chosen.id)}" data-edit-field="budget" value="${esc(draft.budget)}" ${editable?'':'disabled'}></label><div class="muted">100～300000 元，且为 100 的整数倍；优惠券抵扣另行计算。</div><button class="btn small" data-default-id="${esc(chosen.id)}" ${editable?'':'disabled'}>恢复原名称与预算</button></div>`:'';
+      const editor=draft?`<div style="padding:7px 0"><label>新订单名称<input data-edit-id="${esc(chosen.id)}" data-edit-field="name" maxlength="25" value="${esc(draft.name)}" ${editable?'':'disabled'}></label><label>追投预算（元）<input type="number" inputmode="numeric" min="${chosen.promoteType === 'live' ? 200 : 100}" max="300000" step="100" data-edit-id="${esc(chosen.id)}" data-edit-field="budget" value="${esc(draft.budget)}" ${editable?'':'disabled'}></label><div class="muted">${chosen.promoteType === 'live' ? '直播：200' : '100'}～300000 元，且为 100 的整数倍；优惠券抵扣另行计算。</div><button class="btn small" data-default-id="${esc(chosen.id)}" ${editable?'':'disabled'}>恢复原名称与预算</button></div>`:'';
       return `<div class="group"><b>${esc(name)}</b> <span class="muted">${candidates.length} 条</span>${candidates.length ? candidates.map(x =>
         `<label class="candidate"><input type="radio" name="choice-${esc(name)}" data-name="${esc(name)}" value="${esc(x.id)}" ${state.choices[name] === x.id ? 'checked' : ''} ${editable?'':'disabled'}><span><b>${esc(x.id)}</b><br>${esc(x.status)}${x.spent != null ? ` · 投放进度 ¥${esc(x.spent)}/¥${esc(x.budget)}` : ''}${x.roi != null ? ` · 直接成交 ROI ${esc(x.roi)}` : ''} · 原预算 ¥${esc(x.budget)} · 第 ${x.page} 页</span></label>`).join('') : `<div class="muted">${filtering ? '今天没有投放进度达到预算且直接成交 ROI 达标的同名订单。' : '未找到，请核对名称或平台筛选条件。'}</div>`}${editor}</div>`;
     }).join('');
     const totalBudget = selectedDraftTotal();
     const queue = state.queue.map((x,i) => `<div class="queueItem ${i === state.index ? 'current' : ''}">${i+1}. ${esc(targetName(x))} · 追投 ¥${esc(targetBudget(x))}<br><span class="muted">来源：${esc(x.name)} · 原预算 ¥${esc(x.budget)}<br>${esc(x.id)} · ${esc(x.result)}</span></div>`).join('');
     let action = '';
-    if (state.stage === 'awaiting_consent') action = `<div class="hint">请核对剩余订单及《微信视频号企业账号加热功能服务协议》。确认后授权助手逐单提交及支付：平台要求扫码时等待你扫码；显示“免验证提交”时会直接提交付款。每单核对成功后继续下一单。</div><div class="row"><button class="btn primary" id="approve">同意协议并授权剩余订单提交及支付</button></div>`;
+    if (state.stage === 'awaiting_consent') action = `<div class="hint">请核对剩余订单及《微信视频号企业账号加热功能服务协议》及页面显示的《成本保障规则》（如有）。确认后授权助手逐单提交及支付：平台要求扫码时等待你扫码；显示“免验证提交”时会直接提交付款。每单核对成功后继续下一单。</div><div class="row"><button class="btn primary" id="approve">同意协议并授权剩余订单提交及支付</button></div>`;
     if (state.stage === 'review') action = approvedFor(item)
       ? '<div class="hint">正在核对新单来源、名称、预算及优惠券抵扣后的需支付金额。核对通过后自动提交；平台免验证时会直接付款，需要扫码时等待你扫码。</div>'
-      : `<div class="hint">本轮确认未生效，请核对新单名称与需支付金额，并阅读《微信视频号企业账号加热功能服务协议》。点击后会勾选协议并提交本单；平台免验证时会直接付款，需要扫码时等待你扫码。</div><div class="row"><button class="btn primary" id="submit">同意协议并授权本单提交及支付</button></div>`;
+      : `<div class="hint">本轮确认未生效，请核对新单名称与需支付金额，并阅读《微信视频号企业账号加热功能服务协议》及页面显示的《成本保障规则》（如有）。点击后会勾选协议并提交本单；平台免验证时会直接付款，需要扫码时等待你扫码。</div><div class="row"><button class="btn primary" id="submit">同意协议并授权本单提交及支付</button></div>`;
     if (state.stage === 'await_result') action = item?.submitLabel === '免验证提交'
       ? '<div class="hint">已发起免验证提交，正在等待并核对平台支付结果；核对成功后继续下一单，不会重复提交。</div>'
       : '<div class="hint">已提交，正在等待平台支付结果。若出现二维码，请扫码完成支付；核对成功后继续下一单。</div>';
@@ -1033,9 +1075,9 @@
     if (item?.submittedAt && ['await_result','await_payment','needs_review','paused'].includes(state.stage)) {
       action += '<div class="hint">如已付款但未识别，请先在平台核对新订单名称、预算及付款状态，返回标准订单列表后人工确认。此操作会跳过本单的自动核验。</div><div class="row"><button class="btn" id="manualPaid">已人工核实付款，完成本单</button></div>';
     }
-    shadow.innerHTML = css + `<button class="launcher" id="launch" style="display:${open ? 'none' : 'block'}">加热助手</button><div class="panel ${editing ? 'editing' : ''}" style="display:${open ? 'flex' : 'none'}"><div class="head"><div><strong>视频号标准订单逐单加热助手</strong><small>v0.2.13 · 首笔同名订单决定 ROI 入选 · 来源 ID 定位 · 扫码 / 免验证支付</small></div><button id="min" title="最小化">−</button></div><div class="body">
+    shadow.innerHTML = css + `<button class="launcher" id="launch" style="display:${open ? 'none' : 'block'}">加热助手</button><div class="panel ${editing ? 'editing' : ''}" style="display:${open ? 'flex' : 'none'}"><div class="head"><div><strong>视频号标准订单逐单加热助手</strong><small>v0.2.14 · 首笔同名订单决定 ROI 入选 · 来源 ID 定位 · 扫码 / 免验证支付</small></div><button id="min" title="最小化">−</button></div><div class="body">
       <div class="card"><div class="title">账户与进度</div><div class="muted">${esc(state.account || accountName() || '尚未锁定账户')}</div><div class="status">${esc({idle:'等待查找来源订单',scanning:'正在扫描第 '+state.pageCount+' 页',ready:filtering ? (selectedCount ? '已预选当天符合条件的订单，请核对' : '当天没有订单符合筛选条件') : '已预选各名称最靠前的订单，请核对',locating:'正在定位来源订单',awaiting_consent:'等待核对本轮剩余订单',opening:'正在打开“再来一单”',review:approvedFor(item) ? '正在核对新单并自动提交' : '等待核对本单并提交',submitting:'已点击提交，正在核实平台结果',await_result:'已提交，持续等待支付结果',await_payment:'等待你扫码支付',verifying_payment:'支付后核对并返回列表',returning:'正在返回标准订单列表',needs_review:'已暂停，需核对当前结果',paused:'已暂停',complete:'队列全部完成'}[state.stage] || state.stage)}</div>${item ? `<div class="hint">新单：${esc(targetName(item))} · 追投预算 ¥${esc(targetBudget(item))}<br>来源：${esc(item.name)} · ${esc(item.id)} · 原预算 ¥${esc(item.budget)}${state.reviewAmount != null ? ' · 本单需支付 ¥'+esc(state.reviewAmount) : ''}</div>` : ''}${action}</div>
-      <div class="card"><button id="toggleSettings" class="settingsToggle">${expanded ? '收起设置' : '展开设置'}</button><div class="title">来源订单与新单设置</div>${!expanded ? `<div class="settingsSummary">${state.queue.length ? '本轮已锁定 '+state.queue.length+' 单，新名称和追投预算可在下方队列查看。' : '展开后扫描订单、编辑新名称和追投预算。'}</div>` : ''}<div style="display:${expanded ? 'block' : 'none'};clear:both"><div class="muted">每行一个完整名称。本次清单可临时删改，需要完整清单时点击“从名称库恢复”；长期增删请进入“管理名称库”并保存。首次扫描从第一页找齐，执行时优先按记录页码和来源 ID 定位。</div><textarea id="names" placeholder="增香液-12&#10;增香液-13&#10;增香液-14" ${namesEditable?'':'disabled'}>${esc(namesDraft)}</textarea><div class="row"><button class="btn" id="restoreLibraryNames" ${namesEditable?'':'disabled'}>从名称库恢复</button><button class="btn" id="toggleNameLibrary" ${namesEditable?'':'disabled'}>${nameLibraryOpen?'收起名称库':'管理名称库'}（${libraryCount}）</button></div><div class="row"><button class="btn" id="saveDefaultNames" ${namesEditable?'':'disabled'}>当前清单加入名称库</button><button class="btn" id="scan" ${namesEditable?'':'disabled'}>扫描订单</button>${state.stage === 'scanning' ? '<button class="btn danger" id="cancelScan">停止扫描</button>' : ''}</div>${nameLibraryEditor}<label>最低直接成交 ROI<input id="roiMinimum" type="text" inputmode="decimal" value="${esc(state.roiMinimum)}" placeholder="例如 2.0，留空按名称扫描" ${busy || !canScan ? 'disabled' : '' }></label><div class="muted">填写后，仅查今天创建的订单。按列表顺序，每个名称只检查第一笔；第一笔必须消耗完成且直接成交 ROI 达标，后续同名订单不能替代。</div>${state.matches.length || state.scanComplete ? `<div class="muted" style="margin:8px 0">已扫描 ${state.pageCount} 页，找到 ${state.matches.length}/${names.length} 个名称</div><div class="list">${selected}</div>${state.stage === 'ready' && selectedCount ? `<div class="hint">请核对本轮 ${selectedCount} 单的来源编号、新订单名称和追投预算。<span id="targetTotal">${totalBudget == null ? '请检查新名称及追投预算' : '追投预算合计 ¥' + totalBudget.toFixed(2)}</span>。点击开始表示你已阅读并同意《微信视频号企业账号加热功能服务协议》；授权助手逐单核实新单金额、勾选协议并提交及支付。平台要求扫码时等待你扫码；显示“免验证提交”时直接提交付款，核对成功后继续下一单。</div>` : ''}<div class="row"><button class="btn primary" id="start" ${busy || state.stage !== 'ready' || !selectedCount ? 'disabled' : ''}>已核对并同意协议，授权本轮提交及支付</button></div>` : ''}</div>
+      <div class="card"><button id="toggleSettings" class="settingsToggle">${expanded ? '收起设置' : '展开设置'}</button><div class="title">来源订单与新单设置</div>${!expanded ? `<div class="settingsSummary">${state.queue.length ? '本轮已锁定 '+state.queue.length+' 单，新名称和追投预算可在下方队列查看。' : '展开后扫描订单、编辑新名称和追投预算。'}</div>` : ''}<div style="display:${expanded ? 'block' : 'none'};clear:both"><div class="muted">每行一个完整名称。本次清单可临时删改，需要完整清单时点击“从名称库恢复”；长期增删请进入“管理名称库”并保存。首次扫描从第一页找齐，执行时优先按记录页码和来源 ID 定位。</div><textarea id="names" placeholder="增香液-12&#10;增香液-13&#10;增香液-14" ${namesEditable?'':'disabled'}>${esc(namesDraft)}</textarea><div class="row"><button class="btn" id="restoreLibraryNames" ${namesEditable?'':'disabled'}>从名称库恢复</button><button class="btn" id="toggleNameLibrary" ${namesEditable?'':'disabled'}>${nameLibraryOpen?'收起名称库':'管理名称库'}（${libraryCount}）</button></div><div class="row"><button class="btn" id="saveDefaultNames" ${namesEditable?'':'disabled'}>当前清单加入名称库</button><button class="btn" id="scan" ${namesEditable?'':'disabled'}>扫描订单</button>${state.stage === 'scanning' ? '<button class="btn danger" id="cancelScan">停止扫描</button>' : ''}</div>${nameLibraryEditor}<label>最低直接成交 ROI<input id="roiMinimum" type="text" inputmode="decimal" value="${esc(state.roiMinimum)}" placeholder="例如 2.0，留空按名称扫描" ${busy || !canScan ? 'disabled' : '' }></label><div class="muted">填写后，仅查今天创建的订单。按列表顺序，每个名称只检查第一笔；第一笔必须消耗完成且直接成交 ROI 达标，后续同名订单不能替代。</div>${state.matches.length || state.scanComplete ? `<div class="muted" style="margin:8px 0">已扫描 ${state.pageCount} 页，找到 ${state.matches.length}/${names.length} 个名称</div><div class="list">${selected}</div>${state.stage === 'ready' && selectedCount ? `<div class="hint">请核对本轮 ${selectedCount} 单的来源编号、新订单名称和追投预算。<span id="targetTotal">${totalBudget == null ? '请检查新名称及追投预算' : '追投预算合计 ¥' + totalBudget.toFixed(2)}</span>。点击开始表示你已阅读并同意《微信视频号企业账号加热功能服务协议》及页面显示的《成本保障规则》（如有）；授权助手逐单核实新单金额、勾选协议并提交及支付。平台要求扫码时等待你扫码；显示“免验证提交”时直接提交付款，核对成功后继续下一单。</div>` : ''}<div class="row"><button class="btn primary" id="start" ${busy || state.stage !== 'ready' || !selectedCount ? 'disabled' : ''}>已核对并同意协议，授权本轮提交及支付</button></div>` : ''}</div>
       </div><div class="card"><div class="title">逐单队列</div>${queue || '<div class="muted">尚未选择来源订单</div>'}<div class="row"><button class="btn danger" id="pause" ${!['locating','awaiting_consent','opening','review','await_result','await_payment'].includes(state.stage) ? 'disabled' : ''}>暂停</button><button class="btn" id="reset">清空队列</button></div></div>
       <div class="card"><div class="title">执行记录</div><div class="log">${esc(state.logs.slice(-35).join('\n') || '尚无记录')}</div><div class="row"><button class="btn" id="copy">复制记录</button></div></div>
       </div></div>`;

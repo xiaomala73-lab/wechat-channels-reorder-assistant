@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         视频号标准订单逐单加热助手
 // @namespace    local.channels.standard-order-reorder
-// @version      0.2.11
+// @version      0.2.12
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/%E8%A7%86%E9%A2%91%E5%8F%B7%E6%A0%87%E5%87%86%E8%AE%A2%E5%8D%95%E9%80%90%E5%8D%95%E5%8A%A0%E7%83%AD%E5%8A%A9%E6%89%8B.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/%E8%A7%86%E9%A2%91%E5%8F%B7%E6%A0%87%E5%87%86%E8%AE%A2%E5%8D%95%E9%80%90%E5%8D%95%E5%8A%A0%E7%83%AD%E5%8A%A9%E6%89%8B.user.js
-// @description  标准订单逐单追投，支持扫码与免验证提交，核对来源、名称、预算及优惠券后继续
+// @description  标准订单逐单追投，支持可编辑名称库、一键恢复、扫码与免验证提交
 // @match        https://channels.weixin.qq.com/promote/*
 // @run-at       document-idle
 // @noframes
@@ -20,6 +20,8 @@
   if (window.top !== window.self || document.getElementById(ROOT)) return;
 
   const TAB_KEY = ROOT + ':tab';
+  const NAME_LIBRARY_KEY = ROOT + ':name-library:v1';
+  // 仅用于首次迁移旧版默认清单，后续由独立名称库保存。
   const DEFAULT_NAMES_KEY = ROOT + ':default-names:v1';
   const BUILTIN_NAMES = [
     '增香液-12', '增香液-13', '增香液-14', '增香液-15', '增香液-16',
@@ -28,7 +30,11 @@
     '增香液-27', '增香液-28', '增香液-29',
     '增香液-新增测试1-2026-11-18', '增香液-新增测试2-2026-11-18'
   ].join('\n');
-  const defaultNames = GM_getValue(DEFAULT_NAMES_KEY, BUILTIN_NAMES);
+  if (GM_getValue(NAME_LIBRARY_KEY, null) === null) {
+    const legacyNames = GM_getValue(DEFAULT_NAMES_KEY, '');
+    GM_setValue(NAME_LIBRARY_KEY, parseNames(BUILTIN_NAMES + '\n' + legacyNames).join('\n'));
+  }
+  const defaultNames = GM_getValue(NAME_LIBRARY_KEY, BUILTIN_NAMES);
   let tabId = '';
   try {
     tabId = sessionStorage.getItem(TAB_KEY) || '';
@@ -55,6 +61,9 @@
   let busy = false;
   let scanCancel = false;
   let appliedOrderDate = null;
+  let namesDraft = typeof state.namesDraft === 'string' ? state.namesDraft : state.names;
+  let nameLibraryOpen = false;
+  let nameLibraryDraft = null;
   if (!state.edits || typeof state.edits !== 'object' || Array.isArray(state.edits)) state.edits = {};
 
   const host = document.createElement('div');
@@ -120,6 +129,39 @@
     return name;
   }
   function parseNames(value) { return [...new Set(String(value).split(/[\n,，、;；]+/).map(clean).filter(Boolean))]; }
+  function canEditNames() { return !busy && ['idle','ready','complete'].includes(state.stage); }
+  function libraryNames() { return parseNames(GM_getValue(NAME_LIBRARY_KEY, BUILTIN_NAMES)); }
+  function restoreLibraryNames() {
+    if (!canEditNames()) return;
+    const names = libraryNames();
+    if (!names.length) { log('名称库为空，请先在“管理名称库”中添加并保存名称'); return; }
+    namesDraft = names.join('\n');
+    state.names = namesDraft; state.namesDraft = namesDraft;
+    state.matches = []; state.choices = {}; state.edits = {};
+    state.scanComplete = false; state.pageCount = 0; state.lastSourcePage = 0;
+    state.approvedQueueKey = ''; state.stage = 'idle';
+    log('已从名称库恢复 ' + names.length + ' 个名称，请扫描订单');
+  }
+  function addCurrentNamesToLibrary() {
+    if (!canEditNames()) return;
+    const current = parseNames(namesDraft);
+    if (!current.length) { log('当前名称清单为空，请先输入名称'); return; }
+    const previous = libraryNames();
+    if (nameLibraryDraft !== null && parseNames(nameLibraryDraft).join('\n') !== previous.join('\n')) {
+      log('名称库有未保存的修改，请先点击“保存名称库”，再加入当前清单'); return;
+    }
+    const names = [...new Set([...previous, ...current])];
+    GM_setValue(NAME_LIBRARY_KEY, names.join('\n'));
+    nameLibraryDraft = names.join('\n');
+    log('当前清单已加入名称库：新增 ' + (names.length - previous.length) + ' 个，共 ' + names.length + ' 个名称');
+  }
+  function saveNameLibrary() {
+    if (!canEditNames()) return;
+    const names = parseNames(nameLibraryDraft ?? '');
+    GM_setValue(NAME_LIBRARY_KEY, names.join('\n'));
+    nameLibraryDraft = names.join('\n');
+    log('已保存名称库，共 ' + names.length + ' 个名称；点击“从名称库恢复”可填入当前清单');
+  }
   function parseRoi(value) {
     const textValue = clean(value).normalize('NFKC');
     if (!/^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/.test(textValue)) return null;
@@ -476,6 +518,7 @@
       const minimum = parseRoi(minimumText);
       if (minimumText && minimum === null) throw new Error('最低 ROI 请输入 0 或正数');
       state.names = names.join('\n');
+      namesDraft = state.names; state.namesDraft = namesDraft;
       state.roiMinimum = minimumText;
       state.account = accountName();
       if (!state.account) throw new Error('无法确认当前视频号账户');
@@ -957,6 +1000,9 @@
     const editing = state.stage === 'ready' && expanded;
     const filtering = state.roiMinimum !== '';
     const canScan = ['idle', 'ready', 'complete'].includes(state.stage);
+    const namesEditable = canEditNames();
+    const libraryCount = libraryNames().length;
+    const nameLibraryEditor = nameLibraryOpen ? `<div class="group" style="margin-top:10px;border:1px solid #e1e8f1;border-radius:9px"><div class="title">管理名称库 · 已保存 ${libraryCount} 个</div><div class="muted">每行一个名称，可直接新增、删除或改名；点击保存后生效。保存后可从名称库恢复到当前清单。</div><textarea id="nameLibraryDraft" aria-label="名称库" style="min-height:180px" ${namesEditable?'':'disabled'}>${esc(nameLibraryDraft ?? '')}</textarea><div class="row"><button class="btn primary" id="saveNameLibrary" ${namesEditable?'':'disabled'}>保存名称库</button><button class="btn" id="addBuiltinNames" ${namesEditable?'':'disabled'}>补回内置名称</button></div><div class="muted">“补回内置名称”会把最初内置的名称补入编辑框，点击保存后生效。名称库保存在当前浏览器中。</div></div>` : '';
     const selectedCount = selectedNames().length;
     const selected = names.map(name => {
       const candidates = state.matches.filter(x => x.name === name);
@@ -982,22 +1028,36 @@
     if (item?.submittedAt && ['await_result','await_payment','needs_review','paused'].includes(state.stage)) {
       action += '<div class="hint">如已付款但未识别，请先在平台核对新订单名称、预算及付款状态，返回标准订单列表后人工确认。此操作会跳过本单的自动核验。</div><div class="row"><button class="btn" id="manualPaid">已人工核实付款，完成本单</button></div>';
     }
-    shadow.innerHTML = css + `<button class="launcher" id="launch" style="display:${open ? 'none' : 'block'}">加热助手</button><div class="panel ${editing ? 'editing' : ''}" style="display:${open ? 'flex' : 'none'}"><div class="head"><div><strong>视频号标准订单逐单加热助手</strong><small>v0.2.11 · 首笔同名订单决定 ROI 入选 · 来源 ID 定位 · 扫码 / 免验证支付</small></div><button id="min" title="最小化">−</button></div><div class="body">
+    shadow.innerHTML = css + `<button class="launcher" id="launch" style="display:${open ? 'none' : 'block'}">加热助手</button><div class="panel ${editing ? 'editing' : ''}" style="display:${open ? 'flex' : 'none'}"><div class="head"><div><strong>视频号标准订单逐单加热助手</strong><small>v0.2.12 · 首笔同名订单决定 ROI 入选 · 来源 ID 定位 · 扫码 / 免验证支付</small></div><button id="min" title="最小化">−</button></div><div class="body">
       <div class="card"><div class="title">账户与进度</div><div class="muted">${esc(state.account || accountName() || '尚未锁定账户')}</div><div class="status">${esc({idle:'等待查找来源订单',scanning:'正在扫描第 '+state.pageCount+' 页',ready:filtering ? (selectedCount ? '已预选当天符合条件的订单，请核对' : '当天没有订单符合筛选条件') : '已预选各名称最靠前的订单，请核对',locating:'正在定位来源订单',awaiting_consent:'等待核对本轮剩余订单',opening:'正在打开“再来一单”',review:approvedFor(item) ? '正在核对新单并自动提交' : '等待核对本单并提交',submitting:'已点击提交，正在核实平台结果',await_result:'已提交，持续等待支付结果',await_payment:'等待你扫码支付',verifying_payment:'支付后核对并返回列表',returning:'正在返回标准订单列表',needs_review:'已暂停，需核对当前结果',paused:'已暂停',complete:'队列全部完成'}[state.stage] || state.stage)}</div>${item ? `<div class="hint">新单：${esc(targetName(item))} · 追投预算 ¥${esc(targetBudget(item))}<br>来源：${esc(item.name)} · ${esc(item.id)} · 原预算 ¥${esc(item.budget)}${state.reviewAmount != null ? ' · 本单需支付 ¥'+esc(state.reviewAmount) : ''}</div>` : ''}${action}</div>
-      <div class="card"><button id="toggleSettings" class="settingsToggle">${expanded ? '收起设置' : '展开设置'}</button><div class="title">来源订单与新单设置</div>${!expanded ? `<div class="settingsSummary">${state.queue.length ? '本轮已锁定 '+state.queue.length+' 单，新名称和追投预算可在下方队列查看。' : '展开后扫描订单、编辑新名称和追投预算。'}</div>` : ''}<div style="display:${expanded ? 'block' : 'none'};clear:both"><div class="muted">每行一个完整名称；可删改后保存为默认名称。首次扫描从第一页找齐；开始后优先记录页码定位来源 ID，未找到时继续向后查找。</div><textarea id="names" placeholder="增香液-12&#10;增香液-13&#10;增香液-14" ${!['idle','ready','complete'].includes(state.stage) ? 'disabled' : ''}>${esc(state.names)}</textarea><div class="row"><button class="btn" id="saveDefaultNames" ${busy || !['idle','ready','complete'].includes(state.stage) ? 'disabled' : ''}>保存为默认名称</button><button class="btn" id="scan" ${busy || !['idle','ready','complete'].includes(state.stage) ? 'disabled' : ''}>扫描订单</button>${state.stage === 'scanning' ? '<button class="btn danger" id="cancelScan">停止扫描</button>' : ''}</div><label>最低直接成交 ROI<input id="roiMinimum" type="text" inputmode="decimal" value="${esc(state.roiMinimum)}" placeholder="例如 2.0，留空按名称扫描" ${busy || !canScan ? 'disabled' : '' }></label><div class="muted">填写后，仅查今天创建的订单。按列表顺序，每个名称只检查第一笔；第一笔必须消耗完成且直接成交 ROI 达标，后续同名订单不能替代。</div>${state.matches.length || state.scanComplete ? `<div class="muted" style="margin:8px 0">已扫描 ${state.pageCount} 页，找到 ${state.matches.length}/${names.length} 个名称</div><div class="list">${selected}</div>${state.stage === 'ready' && selectedCount ? `<div class="hint">请核对本轮 ${selectedCount} 单的来源编号、新订单名称和追投预算。<span id="targetTotal">${totalBudget == null ? '请检查新名称及追投预算' : '追投预算合计 ¥' + totalBudget.toFixed(2)}</span>。点击开始表示你已阅读并同意《微信视频号企业账号加热功能服务协议》；授权助手逐单核实新单金额、勾选协议并提交及支付。平台要求扫码时等待你扫码；显示“免验证提交”时直接提交付款，核对成功后继续下一单。</div>` : ''}<div class="row"><button class="btn primary" id="start" ${busy || state.stage !== 'ready' || !selectedCount ? 'disabled' : ''}>已核对并同意协议，授权本轮提交及支付</button></div>` : ''}</div>
+      <div class="card"><button id="toggleSettings" class="settingsToggle">${expanded ? '收起设置' : '展开设置'}</button><div class="title">来源订单与新单设置</div>${!expanded ? `<div class="settingsSummary">${state.queue.length ? '本轮已锁定 '+state.queue.length+' 单，新名称和追投预算可在下方队列查看。' : '展开后扫描订单、编辑新名称和追投预算。'}</div>` : ''}<div style="display:${expanded ? 'block' : 'none'};clear:both"><div class="muted">每行一个完整名称。本次清单可临时删改，需要完整清单时点击“从名称库恢复”；长期增删请进入“管理名称库”并保存。首次扫描从第一页找齐，执行时优先按记录页码和来源 ID 定位。</div><textarea id="names" placeholder="增香液-12&#10;增香液-13&#10;增香液-14" ${namesEditable?'':'disabled'}>${esc(namesDraft)}</textarea><div class="row"><button class="btn" id="restoreLibraryNames" ${namesEditable?'':'disabled'}>从名称库恢复</button><button class="btn" id="toggleNameLibrary" ${namesEditable?'':'disabled'}>${nameLibraryOpen?'收起名称库':'管理名称库'}（${libraryCount}）</button></div><div class="row"><button class="btn" id="saveDefaultNames" ${namesEditable?'':'disabled'}>当前清单加入名称库</button><button class="btn" id="scan" ${namesEditable?'':'disabled'}>扫描订单</button>${state.stage === 'scanning' ? '<button class="btn danger" id="cancelScan">停止扫描</button>' : ''}</div>${nameLibraryEditor}<label>最低直接成交 ROI<input id="roiMinimum" type="text" inputmode="decimal" value="${esc(state.roiMinimum)}" placeholder="例如 2.0，留空按名称扫描" ${busy || !canScan ? 'disabled' : '' }></label><div class="muted">填写后，仅查今天创建的订单。按列表顺序，每个名称只检查第一笔；第一笔必须消耗完成且直接成交 ROI 达标，后续同名订单不能替代。</div>${state.matches.length || state.scanComplete ? `<div class="muted" style="margin:8px 0">已扫描 ${state.pageCount} 页，找到 ${state.matches.length}/${names.length} 个名称</div><div class="list">${selected}</div>${state.stage === 'ready' && selectedCount ? `<div class="hint">请核对本轮 ${selectedCount} 单的来源编号、新订单名称和追投预算。<span id="targetTotal">${totalBudget == null ? '请检查新名称及追投预算' : '追投预算合计 ¥' + totalBudget.toFixed(2)}</span>。点击开始表示你已阅读并同意《微信视频号企业账号加热功能服务协议》；授权助手逐单核实新单金额、勾选协议并提交及支付。平台要求扫码时等待你扫码；显示“免验证提交”时直接提交付款，核对成功后继续下一单。</div>` : ''}<div class="row"><button class="btn primary" id="start" ${busy || state.stage !== 'ready' || !selectedCount ? 'disabled' : ''}>已核对并同意协议，授权本轮提交及支付</button></div>` : ''}</div>
       </div><div class="card"><div class="title">逐单队列</div>${queue || '<div class="muted">尚未选择来源订单</div>'}<div class="row"><button class="btn danger" id="pause" ${!['locating','awaiting_consent','opening','review','await_result','await_payment'].includes(state.stage) ? 'disabled' : ''}>暂停</button><button class="btn" id="reset">清空队列</button></div></div>
       <div class="card"><div class="title">执行记录</div><div class="log">${esc(state.logs.slice(-35).join('\n') || '尚无记录')}</div><div class="row"><button class="btn" id="copy">复制记录</button></div></div>
       </div></div>`;
     shadow.getElementById('launch').onclick = () => { open = true; render(); };
     shadow.getElementById('min').onclick = () => { open = false; render(); };
     shadow.getElementById('scan').onclick = scan;
-    shadow.getElementById('saveDefaultNames')?.addEventListener('click',()=>{
-      if(busy||!['idle','ready','complete'].includes(state.stage))return;
-      const names=parseNames(shadow.getElementById('names').value);
-      state.names=names.join('\n');
-      GM_setValue(DEFAULT_NAMES_KEY,state.names);
-      save();
-      log('已保存 '+names.length+' 个默认名称');
+    shadow.getElementById('names')?.addEventListener('input',event=>{
+      if (!canEditNames()) return;
+      namesDraft = event.target.value; state.namesDraft = namesDraft;
+      if (tabId) GM_setValue(STORE_KEY,state);
+    });
+    shadow.getElementById('saveDefaultNames')?.addEventListener('click',addCurrentNamesToLibrary);
+    shadow.getElementById('restoreLibraryNames')?.addEventListener('click',restoreLibraryNames);
+    shadow.getElementById('toggleNameLibrary')?.addEventListener('click',()=>{
+      if (!canEditNames()) return;
+      if (nameLibraryDraft === null) nameLibraryDraft = libraryNames().join('\n');
+      nameLibraryOpen = !nameLibraryOpen;
+      render();
+    });
+    shadow.getElementById('nameLibraryDraft')?.addEventListener('input',event=>{
+      if (canEditNames()) nameLibraryDraft = event.target.value;
+    });
+    shadow.getElementById('saveNameLibrary')?.addEventListener('click',saveNameLibrary);
+    shadow.getElementById('addBuiltinNames')?.addEventListener('click',()=>{
+      if (!canEditNames()) return;
+      nameLibraryDraft = parseNames((nameLibraryDraft ?? '') + '\n' + BUILTIN_NAMES).join('\n');
+      render();
     });
     shadow.getElementById('start')?.addEventListener('click', startQueue);
     shadow.getElementById('toggleSettings')?.addEventListener('click',()=>{state.settingsExpanded=!expanded;save();});

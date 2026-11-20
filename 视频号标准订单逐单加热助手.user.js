@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频号标准订单逐单加热助手
 // @namespace    local.channels.standard-order-reorder
-// @version      0.2.14
+// @version      0.2.15
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/%E8%A7%86%E9%A2%91%E5%8F%B7%E6%A0%87%E5%87%86%E8%AE%A2%E5%8D%95%E9%80%90%E5%8D%95%E5%8A%A0%E7%83%AD%E5%8A%A9%E6%89%8B.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/%E8%A7%86%E9%A2%91%E5%8F%B7%E6%A0%87%E5%87%86%E8%AE%A2%E5%8D%95%E9%80%90%E5%8D%95%E5%8A%A0%E7%83%AD%E5%8A%A9%E6%89%8B.user.js
 // @description  短视频与直播标准订单逐单追投，支持名称库、扫码与免验证提交
@@ -881,11 +881,33 @@
     return Array.from(document.querySelectorAll('div,[role="dialog"]')).some(x =>
       visible(x) && x.children.length < 15 && /使用手机微信扫码确认兑换|(?:微信|手机).*扫码.*(?:支付|付款)|(?:使用|请用|请使用)微信.*(?:支付|付款)/.test(text(x)));
   }
+  function livePaidDetail(item) {
+    const url = new URL(location.href);
+    if (!item?.submittedAt || (item.promoteType && item.promoteType !== 'live') ||
+        url.origin !== 'https://channels.weixin.qq.com' ||
+        !/\/live\/live-promote-order-detail-new\/?$/.test(url.pathname)) return '';
+    const info = document.querySelector('#promote-info');
+    if (!visible(info)) return '';
+    const infoText = info.innerText || '';
+    const name = infoText.match(/(?:^|\n)\s*名称[：:]\s*([^\n]+)/)?.[1];
+    const id = infoText.match(/编号[：:]\s*(\d{10,}_\d+)\b/)?.[1];
+    // 同名旧单和来源订单不能代替本次提交结果；状态只读订单卡，不读下方素材审核状态。
+    if (clean(name) !== targetName(item) || !id || url.searchParams.get('id') !== id ||
+        state.queue.some(x => x.id === id || (x !== item && x.newOrderId === id)) ||
+        (item.newOrderId && item.newOrderId !== id)) return '';
+    const status = info.querySelector('.heat-info-status .status');
+    if (!visible(status) || !/^(订单审核中|审核中|加热中|审核通过|投放中)$/.test(text(status))) return '';
+    const progress = Array.from(document.querySelectorAll('.finder-card')).find(el =>
+      visible(el) && /^消耗进度(?:\s|$)/.test(text(el)));
+    const spend = text(progress).match(/消耗金额[（(]元[）)]\s*[￥¥]?\s*([\d,.]+)\s*\/\s*[￥¥]?\s*([\d,.]+)/);
+    return spend && Number(spend[2].replace(/,/g, '')) === targetBudget(item) ? id : '';
+  }
   function paidDetail() {
     if (onList() || paymentPrompt()) return false;
     if (!state.reviewUrl || location.href === state.reviewUrl) return false;
     const body = document.body.innerText || '';
     const item = currentItem();
+    if (livePaidDetail(item)) return true;
     if (!item || !body.includes('加热详情') || !/(订单审核中|加热中|审核通过|投放中)/.test(body)) return false;
     const spends = Array.from(body.matchAll(/订单消耗\s*[￥¥]?\s*([\d,.]+)\s*\/\s*[￥¥]?\s*([\d,.]+)/g));
     return spends.some(match => Number(match[2].replace(/,/g, '')) === targetBudget(item));
@@ -894,8 +916,12 @@
     if (!paidDetail()) throw new Error('未能确认支付后新订单的加热详情与预算');
     ensureAccount();
     state.detailUrl = location.href;
-    const links = Array.from(document.querySelectorAll('a')).filter(x => visible(x) && text(x) === '订单管理');
-    const breadcrumb = links.find(x => x.parentElement && text(x.parentElement).includes('加热详情')) || links[links.length - 1];
+    const newOrderId = livePaidDetail(currentItem());
+    if (newOrderId) currentItem().newOrderId = newOrderId;
+    const links = Array.from(document.querySelectorAll('a,.finder-ui-desktop-breadcrumb'))
+      .filter(x => visible(x) && text(x) === '订单管理');
+    const breadcrumb = links.find(x => /加热详情|标准订单详情/.test(
+      text(x.closest('.finder-ui-desktop-breadcrumbs') || x.parentElement))) || links[links.length - 1];
     state.stage = 'returning'; state.returningAt = Date.now(); save();
     if (breadcrumb) breadcrumb.click();
     else location.assign('/promote/pages/platform/order-list?tab=standard');
@@ -1075,7 +1101,7 @@
     if (item?.submittedAt && ['await_result','await_payment','needs_review','paused'].includes(state.stage)) {
       action += '<div class="hint">如已付款但未识别，请先在平台核对新订单名称、预算及付款状态，返回标准订单列表后人工确认。此操作会跳过本单的自动核验。</div><div class="row"><button class="btn" id="manualPaid">已人工核实付款，完成本单</button></div>';
     }
-    shadow.innerHTML = css + `<button class="launcher" id="launch" style="display:${open ? 'none' : 'block'}">加热助手</button><div class="panel ${editing ? 'editing' : ''}" style="display:${open ? 'flex' : 'none'}"><div class="head"><div><strong>视频号标准订单逐单加热助手</strong><small>v0.2.14 · 首笔同名订单决定 ROI 入选 · 来源 ID 定位 · 扫码 / 免验证支付</small></div><button id="min" title="最小化">−</button></div><div class="body">
+    shadow.innerHTML = css + `<button class="launcher" id="launch" style="display:${open ? 'none' : 'block'}">加热助手</button><div class="panel ${editing ? 'editing' : ''}" style="display:${open ? 'flex' : 'none'}"><div class="head"><div><strong>视频号标准订单逐单加热助手</strong><small>v0.2.15 · 首笔同名订单决定 ROI 入选 · 来源 ID 定位 · 扫码 / 免验证支付</small></div><button id="min" title="最小化">−</button></div><div class="body">
       <div class="card"><div class="title">账户与进度</div><div class="muted">${esc(state.account || accountName() || '尚未锁定账户')}</div><div class="status">${esc({idle:'等待查找来源订单',scanning:'正在扫描第 '+state.pageCount+' 页',ready:filtering ? (selectedCount ? '已预选当天符合条件的订单，请核对' : '当天没有订单符合筛选条件') : '已预选各名称最靠前的订单，请核对',locating:'正在定位来源订单',awaiting_consent:'等待核对本轮剩余订单',opening:'正在打开“再来一单”',review:approvedFor(item) ? '正在核对新单并自动提交' : '等待核对本单并提交',submitting:'已点击提交，正在核实平台结果',await_result:'已提交，持续等待支付结果',await_payment:'等待你扫码支付',verifying_payment:'支付后核对并返回列表',returning:'正在返回标准订单列表',needs_review:'已暂停，需核对当前结果',paused:'已暂停',complete:'队列全部完成'}[state.stage] || state.stage)}</div>${item ? `<div class="hint">新单：${esc(targetName(item))} · 追投预算 ¥${esc(targetBudget(item))}<br>来源：${esc(item.name)} · ${esc(item.id)} · 原预算 ¥${esc(item.budget)}${state.reviewAmount != null ? ' · 本单需支付 ¥'+esc(state.reviewAmount) : ''}</div>` : ''}${action}</div>
       <div class="card"><button id="toggleSettings" class="settingsToggle">${expanded ? '收起设置' : '展开设置'}</button><div class="title">来源订单与新单设置</div>${!expanded ? `<div class="settingsSummary">${state.queue.length ? '本轮已锁定 '+state.queue.length+' 单，新名称和追投预算可在下方队列查看。' : '展开后扫描订单、编辑新名称和追投预算。'}</div>` : ''}<div style="display:${expanded ? 'block' : 'none'};clear:both"><div class="muted">每行一个完整名称。本次清单可临时删改，需要完整清单时点击“从名称库恢复”；长期增删请进入“管理名称库”并保存。首次扫描从第一页找齐，执行时优先按记录页码和来源 ID 定位。</div><textarea id="names" placeholder="增香液-12&#10;增香液-13&#10;增香液-14" ${namesEditable?'':'disabled'}>${esc(namesDraft)}</textarea><div class="row"><button class="btn" id="restoreLibraryNames" ${namesEditable?'':'disabled'}>从名称库恢复</button><button class="btn" id="toggleNameLibrary" ${namesEditable?'':'disabled'}>${nameLibraryOpen?'收起名称库':'管理名称库'}（${libraryCount}）</button></div><div class="row"><button class="btn" id="saveDefaultNames" ${namesEditable?'':'disabled'}>当前清单加入名称库</button><button class="btn" id="scan" ${namesEditable?'':'disabled'}>扫描订单</button>${state.stage === 'scanning' ? '<button class="btn danger" id="cancelScan">停止扫描</button>' : ''}</div>${nameLibraryEditor}<label>最低直接成交 ROI<input id="roiMinimum" type="text" inputmode="decimal" value="${esc(state.roiMinimum)}" placeholder="例如 2.0，留空按名称扫描" ${busy || !canScan ? 'disabled' : '' }></label><div class="muted">填写后，仅查今天创建的订单。按列表顺序，每个名称只检查第一笔；第一笔必须消耗完成且直接成交 ROI 达标，后续同名订单不能替代。</div>${state.matches.length || state.scanComplete ? `<div class="muted" style="margin:8px 0">已扫描 ${state.pageCount} 页，找到 ${state.matches.length}/${names.length} 个名称</div><div class="list">${selected}</div>${state.stage === 'ready' && selectedCount ? `<div class="hint">请核对本轮 ${selectedCount} 单的来源编号、新订单名称和追投预算。<span id="targetTotal">${totalBudget == null ? '请检查新名称及追投预算' : '追投预算合计 ¥' + totalBudget.toFixed(2)}</span>。点击开始表示你已阅读并同意《微信视频号企业账号加热功能服务协议》及页面显示的《成本保障规则》（如有）；授权助手逐单核实新单金额、勾选协议并提交及支付。平台要求扫码时等待你扫码；显示“免验证提交”时直接提交付款，核对成功后继续下一单。</div>` : ''}<div class="row"><button class="btn primary" id="start" ${busy || state.stage !== 'ready' || !selectedCount ? 'disabled' : ''}>已核对并同意协议，授权本轮提交及支付</button></div>` : ''}</div>
       </div><div class="card"><div class="title">逐单队列</div>${queue || '<div class="muted">尚未选择来源订单</div>'}<div class="row"><button class="btn danger" id="pause" ${!['locating','awaiting_consent','opening','review','await_result','await_payment'].includes(state.stage) ? 'disabled' : ''}>暂停</button><button class="btn" id="reset">清空队列</button></div></div>

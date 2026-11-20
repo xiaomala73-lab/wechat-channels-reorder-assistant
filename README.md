@@ -7,8 +7,8 @@
 | 千川助手 | Windows | 安卓 |
 | --- | --- | --- |
 | 直播定时调速 | [v1.2.11](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js) | [v1.2.15](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js) |
-| 调控 | [v0.1.17](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js) | [v0.1.22](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js) |
-| 素材追投 | [v0.4.40](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js) | [v0.4.42](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js) |
+| 调控 | [v0.1.18](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js) | [v0.1.23](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js) |
+| 素材追投 | [v0.4.41](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js) | [v0.4.43](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js) |
 | 零消耗素材清理 | [v1.1.8](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-windows.user.js) | [v1.1.10](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-android.user.js) |
 
 | 视频号助手 | 安装与订阅 |
@@ -29,6 +29,16 @@
 素材追投、调控、零消耗素材清理异常暂停后，回原计划并点「继续本轮」。进度保留在原浏览器标签页，刷新后可重新锁定原计划再续跑，不在设备之间同步。追投沿用已提交组数及素材 ID；调控只处理原已确认清单中尚未完成且依然符合条件的任务；清理沿用原页、累计删除额度和 AIGC 逐条排查进度。提交结果不明时，先读平台结果：追投用「只重新核查未核清任务」，调控或清理须回原列表核实预算、删除或标签结果。没有可核实的结果时会暂停。
 
 主页带货发布助手默认收起，点击页面右侧的「发布助手」即可展开。上传和商品动态选择器需要按页面校准，首次运行可使用默认的试跑模式。逐单加热助手由用户手动完成每一单的支付。
+
+## 千川新旧 ROI 字段兼容
+
+素材追投 Windows `v0.4.41` / 安卓 `v0.4.43`，调控 Windows `v0.1.18` / 安卓 `v0.1.23`：兼容账户逐步上线的「1小时净成交综合营销ROI」和「调控1小时净成交综合营销ROI」，继续支持旧的「综合营销ROI」「调控综合营销ROI」和「调控支付ROI」。
+
+素材追投有 1 小时净成交列时优先按该列降序和阈值选素材，没有时使用旧列；排序、翻页、行读取及提交前复核使用同一列。执行记录和报告标明实际列名，本轮中途更换 ROI 列时暂停。只显示 24 小时净成交列时，不将其替代为 1 小时指标。
+
+商品调控让页面显示的新旧 ROI 列共用原 ROI 阈值，任一已显示列为「—」或低于阈值即入选；仍要求综合成本、调控消耗均大于 0。预览标明实际参与判断的列，并在提交前再次核对数值。直播调控沿用支付 ROI。
+
+四类助手的 Windows、安卓版均已检查字段依赖：本次修改涉及追投和调控共 4 个脚本文件；定时调速没有 ROI 筛选，零消耗清理按综合成本判断，二者读取的字段不受 ROI 列更名影响，因此沿用原版。
 
 ## 调控助手：按计划 ID 预填默认值
 

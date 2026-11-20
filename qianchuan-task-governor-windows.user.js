@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         千川调控助手
 // @namespace    local.qianchuan.task-governor
-// @version      0.1.17
+// @version      0.1.18
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js
 // @description  直播高ROI任务追加预算，支持因任务预算不足暂停的任务；低ROI删除；先检查本页再执行
@@ -291,10 +291,10 @@
         if (positions.length !== 1) throw new Error('缺少唯一的“' + label + '”列');
         column[label] = positions[0];
       }
-      const roiOptions = d.kind === 'live' ? ['调控支付ROI'] : ['调控综合营销ROI', '调控支付ROI'];
+      const roiOptions = d.kind === 'live' ? ['调控支付ROI'] : ['调控综合营销ROI', '调控1小时净成交综合营销ROI', '调控支付ROI'];
       const roiLabels = [];
       for (const label of roiOptions) {
-        const positions = labels.map((value, index) => value === label ? index : -1).filter(index => index >= 0);
+        const positions = labels.map((value, index) => normalized(value) === normalized(label) ? index : -1).filter(index => index >= 0);
         if (positions.length > 1) throw new Error('任务表中“' + label + '”列重复');
         if (positions.length === 1) { column[label] = positions[0]; roiLabels.push(label); }
       }
@@ -326,11 +326,15 @@
           text(cells[table.column['调控综合营销ROI']]) : '';
         const paymentRaw = Number.isInteger(table.column['调控支付ROI']) ?
           text(cells[table.column['调控支付ROI']]) : '';
+        const netMarketingRaw = Number.isInteger(table.column['调控1小时净成交综合营销ROI']) ?
+          text(cells[table.column['调控1小时净成交综合营销ROI']]) : '';
+        const netMarketingRoi = parseRoi(netMarketingRaw);
         const marketingRoi = parseRoi(marketingRaw);
         const paymentRoi = parseRoi(paymentRaw);
         const roi = table.d.kind === 'live' ? paymentRoi : NaN;
         return { id, name: rawName.replace(/\s*ID[：:]\s*\d+[\s\S]*$/, '').trim(),
           status, budget, comprehensiveCost, spend, roi, marketingRoi, paymentRoi,
+          netMarketingRoi, netMarketingRoiDash: dashRoi(netMarketingRaw),
           marketingRoiDash: dashRoi(marketingRaw), paymentRoiDash: dashRoi(paymentRaw), row };
       });
     }
@@ -358,7 +362,8 @@
       if (isProductDelete(params.action)) {
         if (!Number.isSafeInteger(item.comprehensiveCost) || item.comprehensiveCost <= 0 ||
             !Number.isSafeInteger(item.spend) || item.spend <= 0) return false;
-        return item.marketingRoiDash || item.paymentRoiDash ||
+        return item.marketingRoiDash || item.netMarketingRoiDash || item.paymentRoiDash ||
+          (Number.isFinite(item.netMarketingRoi) && item.netMarketingRoi < params.marketingRoi) ||
           (Number.isFinite(item.marketingRoi) && item.marketingRoi < params.marketingRoi) ||
           (Number.isFinite(item.paymentRoi) && item.paymentRoi < params.paymentRoi);
       }
@@ -381,9 +386,12 @@
     }
     function sameValues(a, b) {
       const equalNumber = (x, y) => x === y || (Number.isNaN(x) && Number.isNaN(y));
+      const equalOptionalRoi = (x, y) => equalNumber(x, y) ||
+        ((x == null || Number.isNaN(x)) && (y == null || Number.isNaN(y)));
       return a.id === b.id && a.status === b.status && equalNumber(a.roi, b.roi) &&
         equalNumber(a.marketingRoi, b.marketingRoi) && equalNumber(a.paymentRoi, b.paymentRoi) &&
         a.marketingRoiDash === b.marketingRoiDash && a.paymentRoiDash === b.paymentRoiDash &&
+        equalOptionalRoi(a.netMarketingRoi, b.netMarketingRoi) && !!a.netMarketingRoiDash === !!b.netMarketingRoiDash &&
         equalNumber(a.budget, b.budget) && equalNumber(a.comprehensiveCost, b.comprehensiveCost) &&
         equalNumber(a.spend, b.spend);
     }
@@ -407,6 +415,7 @@
         const targets = items.filter(x => eligible(x, params)).map(x => ({
           id: x.id, name: x.name, status: x.status, roi: x.roi,
           marketingRoi: x.marketingRoi, paymentRoi: x.paymentRoi,
+          netMarketingRoi: x.netMarketingRoi, netMarketingRoiDash: x.netMarketingRoiDash,
           marketingRoiDash: x.marketingRoiDash, paymentRoiDash: x.paymentRoiDash,
           budget: x.budget, comprehensiveCost: x.comprehensiveCost, spend: x.spend
         }));
@@ -811,18 +820,19 @@
         action === 'live-budget' ?
         `<div class="grid"><label class="field">调控支付 ROI 不低于<input id="live-budget-roi" type="number" min="0" step="0.01" value="${esc(cfg.liveBudgetRoi)}" ${fieldDisabled}></label><label class="field">预算 − 消耗低于（元）<input id="gap" type="number" min="0" step="0.01" value="${esc(cfg.gap)}" ${fieldDisabled}></label><label class="field">每条追加预算（元）<input id="add" type="number" min="0.01" step="0.01" value="${esc(cfg.add)}" ${fieldDisabled}></label></div>` :
         isProductDelete(action) ?
-        `<label class="field">调控 ROI 低于（综合营销 / 支付共用）<input id="product-roi" type="number" min="0" step="0.01" value="${esc(cfg.productRoi)}" ${fieldDisabled}></label>` :
+        `<label class="field">调控 ROI 低于（综合营销 / 1小时净成交 / 支付共用）<input id="product-roi" type="number" min="0" step="0.01" value="${esc(cfg.productRoi)}" ${fieldDisabled}></label>` :
         '<div class="hint">选择操作后，填写该操作需要的条件。</div>';
       const conditionHint = isLiveDelete(action) ? '仅筛选当前页“调控中”且 ROI 低于阈值的任务。' :
         action === 'live-budget' ? 'ROI 达标后，调控中任务按预算与消耗的差值阈值筛选。已暂停且提示“任务预算不足”的任务，只有消耗达到当前预算才会追加。' :
-        isProductDelete(action) ? '只填一个 ROI 阈值，按页面实际显示的综合营销 ROI / 支付 ROI 判断；两列都显示时共用该阈值，任一列为“—”或低于阈值即符合条件，不相加、不取平均。仍要求综合成本和消耗都大于 0；未显示的列不参与判断。升级时旧阈值不一致会留空，请重新填写。' : '';
+        isProductDelete(action) ? '只填一个 ROI 阈值，支持页面显示的调控综合营销 ROI、调控1小时净成交综合营销 ROI 和调控支付 ROI；已显示的列共用阈值，任一列为“—”或低于阈值即符合条件。仍要求综合成本和消耗都大于 0；未显示的列不参与判断。' : '';
       const targets = p?.targets || [];
       const paused = !!checkpoint();
       const missingProductRoi = p?.kind === 'product' ? ['调控综合营销ROI', '调控支付ROI']
-        .filter(label => !p.roiLabels.includes(label)) : [];
-      const previewItems = targets.slice(0, 100).map(x => `<div class="item"><b>${esc(x.name || x.id)}</b><span class="pill">ID ${esc(x.id)}</span>${isProductDelete(p.params.action) ? `<span class="pill">调控综合营销ROI ${Number.isFinite(x.marketingRoi) ? esc(x.marketingRoi) : x.marketingRoiDash ? '—' : '不可用'}</span><span class="pill">调控支付ROI ${Number.isFinite(x.paymentRoi) ? esc(x.paymentRoi) : x.paymentRoiDash ? '—' : '不可用'}</span><span class="pill">综合成本 ${yuan(x.comprehensiveCost)} 元</span><span class="pill">调控消耗 ${yuan(x.spend)} 元</span>` : `<span class="pill">ROI ${esc(x.roi)}</span>`}${Number.isInteger(x.budget) ? `<span class="pill">预算 ${yuan(x.budget)}</span><span class="pill">消耗 ${yuan(x.spend)}</span>` : ''}${p.params.action === 'live-budget' ? `<span class="pill">拟改为 ${yuan(x.budget + p.params.add)}</span>` : ''}</div>`).join('');
+        .filter(label => !p.roiLabels.includes(label) &&
+          !(label === '调控综合营销ROI' && p.roiLabels.includes('调控1小时净成交综合营销ROI'))) : [];
+      const previewItems = targets.slice(0, 100).map(x => `<div class="item"><b>${esc(x.name || x.id)}</b><span class="pill">ID ${esc(x.id)}</span>${isProductDelete(p.params.action) ? `${p.roiLabels.includes('调控1小时净成交综合营销ROI') ? `<span class="pill">调控1小时净成交综合营销ROI ${Number.isFinite(x.netMarketingRoi) ? esc(x.netMarketingRoi) : x.netMarketingRoiDash ? '—' : '不可用'}</span>` : ''}${p.roiLabels.includes('调控综合营销ROI') ? `<span class="pill">调控综合营销ROI ${Number.isFinite(x.marketingRoi) ? esc(x.marketingRoi) : x.marketingRoiDash ? '—' : '不可用'}</span>` : ''}${p.roiLabels.includes('调控支付ROI') ? `<span class="pill">调控支付ROI ${Number.isFinite(x.paymentRoi) ? esc(x.paymentRoi) : x.paymentRoiDash ? '—' : '不可用'}</span>` : ''}<span class="pill">综合成本 ${yuan(x.comprehensiveCost)} 元</span><span class="pill">调控消耗 ${yuan(x.spend)} 元</span>` : `<span class="pill">ROI ${esc(x.roi)}</span>`}${Number.isInteger(x.budget) ? `<span class="pill">预算 ${yuan(x.budget)}</span><span class="pill">消耗 ${yuan(x.spend)}</span>` : ''}${p.params.action === 'live-budget' ? `<span class="pill">拟改为 ${yuan(x.budget + p.params.add)}</span>` : ''}</div>`).join('');
       shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${state.open ? 'none' : 'block'};top:${esc(state.launcherTop)}%" title="点击展开，拖动调整位置">调控助手</button>
-        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>千川调控助手</strong><small>v0.1.17 · 按计划预填 ROI 和追加预算参数 · 默认静默最小化</small></div><button id="minimize" title="最小化">−</button></div><div class="body">
+        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>千川调控助手</strong><small>v0.1.18 · 按计划预填 ROI 和追加预算参数 · 默认静默最小化</small></div><button id="minimize" title="最小化">−</button></div><div class="body">
         <div class="card"><div class="eyebrow">锁定当前计划</div><div class="title">${esc(lock?.planName || '尚未锁定')}</div><div class="muted">账户 ${esc(lock?.accountId || '—')} · 计划 ${esc(lock?.planId || '—')} · ${lock?.kind === 'live' ? '推直播' : lock?.kind === 'product' ? '推商品' : '未识别'}</div>${needsRelock ? '<div class="hint warn">当前页面与已锁定计划不同，请重新锁定当前计划。</div>' : ''}<div class="row"><button id="lock" class="btn" ${state.busy ? 'disabled' : ''}>锁定当前计划</button></div></div>
         <div class="card"><div class="eyebrow">筛选条件</div><label class="field">本次操作<select id="action" ${fieldDisabled}><option value="">请选择</option>${choices}${protectedMode ? '<option value="' + protectedAction + '" hidden>低 ROI 删除（保留 0 消耗）</option>' : ''}</select></label>${keepZeroButton}${conditionFields}
         ${protectedMode ? '<div class="hint">只筛选调控消耗已确认大于 0 且符合低 ROI 删除条件的任务。</div>' : ''}<div class="hint">锁定商品计划时自动选择低 ROI 删除；名单内预填 ROI，名单外留空。可手动修改；重新锁定或重新选择直播低 ROI 删除会恢复默认值。</div>${conditionHint ? `<div class="hint">${conditionHint}</div>` : ''}</div>

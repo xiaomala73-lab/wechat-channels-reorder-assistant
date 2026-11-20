@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Material Chase Assistant (Android)
 // @namespace    local.qianchuan.chase
-// @version      0.4.42
+// @version      0.4.43
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js
 // @description  Android old/new material status headers; product/live eligibility, semantic tables and pagination compatibility.
@@ -447,16 +447,41 @@
     return label === '\u7D20\u6750\u72B6\u6001' ? '\u5BA1\u6838\u72B6\u6001' : label;
   }
 
+  // Match whole column names: the 24-hour metric is a different measure.
+  var MATERIAL_ROI_LABELS = ['1小时净成交综合营销ROI', '综合营销ROI'];
+  function materialRoiLabel(headers) {
+    for (var label of MATERIAL_ROI_LABELS) {
+      var count = headers.filter(function (value) { return value === label; }).length;
+      if (count > 1) throw new Error('素材 ROI 列重复：' + label);
+      if (count === 1) return label;
+    }
+    return '';
+  }
+  function materialSortLabel(table, label) {
+    if (!MATERIAL_ROI_LABELS.includes(label)) return label;
+    var actual = materialRoiLabel(table.headers);
+    if (!actual) throw new Error('素材表缺少综合营销 ROI 或 1小时净成交综合营销 ROI');
+    var run = state.busy && state.currentRun;
+    // Runs created before this compatibility update used the legacy column.
+    if (run && !run.roiLabel && run.groups.some(function (group) { return group.uiSuccess; })) {
+      run.roiLabel = '综合营销ROI';
+    }
+    if (run && run.roiLabel && run.roiLabel !== actual) {
+      throw new Error('本轮 ROI 列已改变，请恢复原列或结束本轮后重新开始');
+    }
+    return actual;
+  }
+
   function materialTable(drawer) {
     var required = state.config.planKind === 'live' ? ['\u89C6\u9891\u7C7B\u578B', '\u7D20\u6750\u8FFD\u6295', '\u89C6\u9891'] : [];
     required.push('\u521B\u5EFA\u65F6\u95F4');
-    if (state.config.mode === 'roi') required.push('\u7EFC\u5408\u8425\u9500ROI');
     required.push('\u64CD\u4F5C', '\u5BA1\u6838\u72B6\u6001');
     var tables = Array.from(drawer.querySelectorAll('table')).filter(tableLayoutVisible);
     var candidates = tables.map(function (head) {
       return { head: head, headers: materialHeaderCells(head).map(materialHeaderText) };
     }).filter(function (table) {
-      return required.every(function (label) { return table.headers.includes(label); }) &&
+      return (state.config.mode !== 'roi' || !!materialRoiLabel(table.headers)) &&
+        required.every(function (label) { return table.headers.includes(label); }) &&
         (table.headers.includes('\u89C6\u9891') || table.headers.includes('\u7D20\u6750\u7C7B\u578B'));
     });
     if (!candidates.length) {
@@ -532,6 +557,7 @@
   }
 
   function activeSort(table, label) {
+    label = materialSortLabel(table, label);
     var candidates = materialHeaderCells(table.head).filter(function (th) {
       return materialHeaderText(th) === label;
     });
@@ -543,6 +569,7 @@
   function sortedPageSignature(label) {
     var drawer = context('creative').drawer;
     var table = materialTable(drawer);
+    label = materialSortLabel(table, label);
     if (!activeSort(table, label)) return '';
     var column = table.headers.indexOf(label);
     if (column < 0) return '';
@@ -564,7 +591,7 @@
       if (!id) return '';
       signature.push(id + ':' + raw);
       var value;
-      if (label === '\u7EFC\u5408\u8425\u9500ROI') {
+      if (MATERIAL_ROI_LABELS.includes(label)) {
         if (/^[-\u2014\u2013\/]*$/.test(raw) || raw === '\u6682\u65E0\u6570\u636E') continue;
         value = Number(raw.replace(/,/g, ''));
         if (!Number.isFinite(value)) continue;
@@ -576,7 +603,7 @@
       if (previous !== null && value > previous) return '';
       previous = value;
     }
-    return signature.join('|');
+    return label + ':' + signature.join('|');
   }
 
   async function waitForStableSort(label) {
@@ -598,6 +625,11 @@
   async function ensureSort(label) {
     var drawer = context('creative').drawer;
     var table = materialTable(drawer);
+    label = materialSortLabel(table, label);
+    if (MATERIAL_ROI_LABELS.includes(label) && state.currentRun) {
+      state.currentRun.roiLabel = label;
+      saveJournal();
+    }
     if (!activeSort(table, label)) {
       var th = unique(materialHeaderCells(table.head).filter(function (el) {
         return materialHeaderText(el) === label;
@@ -672,7 +704,7 @@
       source: table.headers.indexOf(state.config.planKind === 'live' ? '\u89C6\u9891\u7C7B\u578B' : '\u7D20\u6750\u7C7B\u578B'),
       chasing: table.headers.indexOf('\u7D20\u6750\u8FFD\u6295'),
       date: table.headers.indexOf('\u521B\u5EFA\u65F6\u95F4'),
-      roi: table.headers.indexOf('\u7EFC\u5408\u8425\u9500ROI')
+      roi: table.headers.indexOf(materialRoiLabel(table.headers))
     };
     var missingColumns = [];
     if (hi.op < 0) missingColumns.push('\u64CD\u4F5C');
@@ -2335,7 +2367,7 @@
     });
     return [
       run.accountName + ' \u2192 ' + run.planName,
-      '\u6A21\u5F0F\uFF1A' + (run.mode === 'roi' ? '\u7EFC\u5408\u8425\u9500ROI\u964D\u5E8F' : '\u521B\u5EFA\u65E5\u671F\u964D\u5E8F'),
+      '模式：' + (run.mode === 'roi' ? (run.roiLabel || '综合营销ROI') + '降序' : '创建日期降序'),
       '\u8BA1\u5212\u7C7B\u578B\uFF1A' + (run.planKind === 'live' ? '\u63A8\u76F4\u64AD\u95F4' : '\u5546\u54C1\u81EA\u9009') +
         (run.planKind === 'live' ? '\uFF1B\u63A7\u6210\u672C\u8FFD\u6295\uFF1B\u4F18\u5316\u76EE\u6807' + run.liveGoal + '\uFF1B' +
           (run.liveGoal === '\u76F4\u64AD\u95F4\u6210\u4EA4' ? '\u6211\u7684\u51FA\u4EF7' + run.bid + '\u5143' : '\u7EFC\u5408\u8425\u9500ROI\u76EE\u6807' + run.liveRoiTarget) +
@@ -3160,7 +3192,7 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       '</style>',
       '<button class="launcher" id="launch" title="\u70B9\u51FB\u5C55\u5F00\uFF0C\u62D6\u52A8\u53EF\u8C03\u6574\u4F4D\u7F6E" aria-label="\u5C55\u5F00\u5343\u5DDD\u8FFD\u6295\u52A9\u624B" style="display:', state.open === false ? 'block' : 'none', ';top:', esc(state.launcherTop), '%">\u8FFD\u6295\u52A9\u624B</button>',
       '<div class="panel" style="display:', state.open === false ? 'none' : 'flex', '">',
-      '<div class="head"><strong>\u5343\u5DDD\u7D20\u6750\u8FFD\u6295\u52A9\u624B v0.4.42</strong><button id="close" title="\u6700\u5C0F\u5316" aria-label="\u6700\u5C0F\u5316\u52A9\u624B">\u2212</button></div>',
+      '<div class="head"><strong>\u5343\u5DDD\u7D20\u6750\u8FFD\u6295\u52A9\u624B v0.4.43</strong><button id="close" title="\u6700\u5C0F\u5316" aria-label="\u6700\u5C0F\u5316\u52A9\u624B">\u2212</button></div>',
       '<div class="body">',
       '<div class="card"><div class="muted">\u9501\u5B9A\u8D26\u6237 / ', cfg.planKind === 'live' ? '\u63A8\u76F4\u64AD\u95F4\u8BA1\u5212' : '\u5546\u54C1\u81EA\u9009\u8BA1\u5212', '</div>',
       '<strong>', esc(cfg.accountName || '\u5C1A\u672A\u9501\u5B9A'), '</strong><br>',
@@ -3181,7 +3213,7 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       '<button class="tab ', cfg.mode === 'date' ? 'on' : '', '" id="mode-date">\u6309\u521B\u5EFA\u65E5\u671F\u8FFD\u6295</button></div>',
       '<div class="card" style="margin-top:9px">',
       cfg.mode === 'roi' ?
-        ((cfg.planKind === 'live' ? '\u76F4\u64AD\u89C6\u9891' : '\u81EA\u9009\u6295\u653E\u7D20\u6750') + ' \u00B7 \u7EFC\u5408\u8425\u9500 ROI \u964D\u5E8F \u00B7 ' + roiPageSize() + ' \u6761/\u9875\u3002' +
+        ((cfg.planKind === 'live' ? '\u76F4\u64AD\u89C6\u9891' : '\u81EA\u9009\u6295\u653E\u7D20\u6750') + ' \u00B7 综合营销 ROI 降序（优先1小时净成交，兼容旧列） \u00B7 ' + roiPageSize() + ' \u6761/\u9875\u3002' +
           (cfg.roiStrategy === 'strict' ? '\u53EA\u9009 ROI\u2265' + cfg.roiThreshold + ' \u7684\u7D20\u6750\uFF1B\u5C3E\u7EC4\u8FBE\u5230' + (cfg.planKind === 'live' ? cfg.tailMin : 1) + '\u6761\u624D\u63D0\u4EA4\u3002' :
             '\u9996\u6B21\u9047\u5230 ROI\uFF1C' + cfg.roiThreshold + ' \u65F6\uFF0C\u51D1\u6EE1\u5F53\u524D\u7EC4\u63D0\u4EA4\u540E\u505C\u6B62\uFF1B\u8BE5\u7EC4\u53EF\u80FD\u5305\u542B\u4F4E\u4E8E\u9608\u503C\u7684\u7D20\u6750\u3002')) :
         ((cfg.planKind === 'live' ? '\u76F4\u64AD\u89C6\u9891' : '\u81EA\u9009\u6295\u653E\u7D20\u6750') + ' \u00B7 \u521B\u5EFA\u65F6\u95F4\u964D\u5E8F \u00B7 ' + (cfg.planKind === 'live' ? 100 : 20) + ' \u6761/\u9875\u3002\u53EA\u9009\u8D77\u59CB\u65E5\u81F3\u7ED3\u675F\u65E5\uFF08\u542B\u4E24\u7AEF\uFF09\u5185\u521B\u5EFA\u7684\u7D20\u6750\uFF1B\u6BCF ' + cfg.dateGroupSize + ' \u6761\u4E00\u7EC4\uFF0C\u5C3E\u7EC4\u81F3\u5C11 ' + cfg.tailMin + ' \u6761\u624D\u63D0\u4EA4\u3002'),

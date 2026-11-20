@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巨量千川素材追投助手（安全锁定版）
 // @namespace    local.qianchuan.chase
-// @version      0.4.40
+// @version      0.4.41
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js
 // @description  商品日期追投可设最终尾组最低数量；直播日期允许未审核素材；整组复核补选；提交失败限重试一次
@@ -399,21 +399,47 @@
     addLog('素材类型已筛选为“' + FILTER_LABEL + '”');
   }
 
+  // Match whole column names: the 24-hour metric is a different measure.
+  var MATERIAL_ROI_LABELS = ['1小时净成交综合营销ROI', '综合营销ROI'];
+  function materialRoiLabel(headers) {
+    for (var label of MATERIAL_ROI_LABELS) {
+      var count = headers.filter(function (value) { return value === label; }).length;
+      if (count > 1) throw new Error('素材 ROI 列重复：' + label);
+      if (count === 1) return label;
+    }
+    return '';
+  }
+  function materialSortLabel(table, label) {
+    if (!MATERIAL_ROI_LABELS.includes(label)) return label;
+    var actual = materialRoiLabel(table.headers);
+    if (!actual) throw new Error('素材表缺少综合营销 ROI 或 1小时净成交综合营销 ROI');
+    var run = state.busy && state.currentRun;
+    // Runs created before this compatibility update used the legacy column.
+    if (run && !run.roiLabel && run.groups.some(function (group) { return group.uiSuccess; })) {
+      run.roiLabel = '综合营销ROI';
+    }
+    if (run && run.roiLabel && run.roiLabel !== actual) {
+      throw new Error('本轮 ROI 列已改变，请恢复原列或结束本轮后重新开始');
+    }
+    return actual;
+  }
+
   function materialTable(drawer) {
     var head = unique(drawer.querySelectorAll('.main-vmok-plugin-table__head-wrapper table'), '素材表头');
     var body = unique(drawer.querySelectorAll('.main-vmok-plugin-table__body-wrapper table'), '素材表体');
-    var headers = Array.from(head.querySelectorAll('thead tr:first-child th')).map(exactText);
+    var headers = Array.from(head.querySelectorAll('thead tr:first-child th')).map(function (th) { return exactText(th).replace(/\s+/g, ''); });
     if (!(state.config.planKind === 'live' ? headers.includes('视频类型') && headers.includes('素材追投') && headers.includes('视频') :
       headers.includes('素材类型')) || !headers.includes('创建时间') ||
-        (state.config.mode === 'roi' && !headers.includes('综合营销ROI'))) {
+        (state.config.mode === 'roi' && !materialRoiLabel(headers))) {
       throw new Error('素材表列已改变');
     }
     return { head: head, body: body, headers: headers };
   }
 
   function activeSort(table, label) {
+    label = materialSortLabel(table, label);
     var candidates = Array.from(table.head.querySelectorAll('thead tr:first-child th')).filter(function (th) {
-      return exactText(th) === label;
+      return exactText(th).replace(/\s+/g, '') === label;
     });
     var th = unique(candidates, label + '列');
     return !!th.querySelector('.main-vmok-plugin-th__sorter-down--active');
@@ -422,6 +448,7 @@
   function sortedPageSignature(label) {
     var drawer = context('creative').drawer;
     var table = materialTable(drawer);
+    label = materialSortLabel(table, label);
     if (!activeSort(table, label)) return '';
     var column = table.headers.indexOf(label);
     if (column < 0) return '';
@@ -443,7 +470,7 @@
       if (!id) return '';
       signature.push(id + ':' + raw);
       var value;
-      if (label === '综合营销ROI') {
+      if (MATERIAL_ROI_LABELS.includes(label)) {
         if (/^[-—–\/]*$/.test(raw) || raw === '暂无数据') continue;
         value = Number(raw.replace(/,/g, ''));
         if (!Number.isFinite(value)) continue;
@@ -455,7 +482,7 @@
       if (previous !== null && value > previous) return '';
       previous = value;
     }
-    return signature.join('|');
+    return label + ':' + signature.join('|');
   }
 
   async function waitForStableSort(label) {
@@ -477,9 +504,14 @@
   async function ensureSort(label) {
     var drawer = context('creative').drawer;
     var table = materialTable(drawer);
+    label = materialSortLabel(table, label);
+    if (MATERIAL_ROI_LABELS.includes(label) && state.currentRun) {
+      state.currentRun.roiLabel = label;
+      saveJournal();
+    }
     if (!activeSort(table, label)) {
       var th = unique(Array.from(table.head.querySelectorAll('thead tr:first-child th')).filter(function (el) {
-        return exactText(el) === label;
+        return exactText(el).replace(/\s+/g, '') === label;
       }), label + '排序列');
       var down = unique(th.querySelectorAll('.main-vmok-plugin-th__sorter-down'), label + '降序箭头');
       await safeClick(down, label + '降序箭头');
@@ -546,7 +578,7 @@
       source: table.headers.indexOf(state.config.planKind === 'live' ? '视频类型' : '素材类型'),
       chasing: table.headers.indexOf('素材追投'),
       date: table.headers.indexOf('创建时间'),
-      roi: table.headers.indexOf('综合营销ROI')
+      roi: table.headers.indexOf(materialRoiLabel(table.headers))
     };
     if ([hi.op, hi.audit, hi.source, hi.date].some(function (v) { return v < 0; }) ||
         (state.config.mode === 'roi' && hi.roi < 0)) throw new Error('素材表缺少必需列');
@@ -2195,7 +2227,7 @@
     });
     return [
       run.accountName + ' → ' + run.planName,
-      '模式：' + (run.mode === 'roi' ? '综合营销ROI降序' : '创建日期降序'),
+      '模式：' + (run.mode === 'roi' ? (run.roiLabel || '综合营销ROI') + '降序' : '创建日期降序'),
       '计划类型：' + (run.planKind === 'live' ? '推直播间' : '商品自选') +
         (run.planKind === 'live' ? '；控成本追投；优化目标' + run.liveGoal + '；' +
           (run.liveGoal === '直播间成交' ? '我的出价' + run.bid + '元' : '综合营销ROI目标' + run.liveRoiTarget) +
@@ -2861,7 +2893,7 @@
       '</style>',
       '<button class="launcher" id="launch" title="点击展开，拖动可调整位置" aria-label="展开千川追投助手" style="display:', state.open === false ? 'block' : 'none', ';top:', esc(state.launcherTop), '%">追投助手</button>',
       '<div class="panel" style="display:', state.open === false ? 'none' : 'flex', '">',
-      '<div class="head"><strong>千川素材追投助手 v0.4.40</strong><button id="close" title="最小化" aria-label="最小化助手">−</button></div>',
+      '<div class="head"><strong>千川素材追投助手 v0.4.41</strong><button id="close" title="最小化" aria-label="最小化助手">−</button></div>',
       '<div class="body">',
       '<div class="card"><div class="muted">锁定账户 / ', cfg.planKind === 'live' ? '推直播间计划' : '商品自选计划', '</div>',
       '<strong>', esc(cfg.accountName || '尚未锁定'), '</strong><br>',
@@ -2882,7 +2914,7 @@
       '<button class="tab ', cfg.mode === 'date' ? 'on' : '', '" id="mode-date">按创建日期追投</button></div>',
       '<div class="card" style="margin-top:9px">',
       cfg.mode === 'roi' ?
-        ((cfg.planKind === 'live' ? '直播视频' : '自选投放素材') + ' · 综合营销 ROI 降序 · ' + roiPageSize() + ' 条/页。' +
+        ((cfg.planKind === 'live' ? '直播视频' : '自选投放素材') + ' · 综合营销 ROI 降序（优先1小时净成交，兼容旧列） · ' + roiPageSize() + ' 条/页。' +
           (cfg.roiStrategy === 'strict' ? '只选 ROI≥' + cfg.roiThreshold + ' 的素材；尾组达到' + (cfg.planKind === 'live' ? cfg.tailMin : 1) + '条才提交。' :
             '首次遇到 ROI＜' + cfg.roiThreshold + ' 时，凑满当前组提交后停止；该组可能包含低于阈值的素材。')) :
         ((cfg.planKind === 'live' ? '直播视频' : '自选投放素材') + ' · 创建时间降序 · ' + (cfg.planKind === 'live' ? 100 : 20) + ' 条/页。只选起始日至结束日（含两端）内创建的素材；每 ' + cfg.dateGroupSize + ' 条一组，尾组至少 ' + cfg.tailMin + ' 条才提交。'),

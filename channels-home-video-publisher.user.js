@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频号主页带货发布助手
 // @namespace    local.channels.home-video-publisher
-// @version      1.1.2
+// @version      1.1.3
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js
 // @match        https://channels.weixin.qq.com/platform/post/create*
@@ -27,35 +27,29 @@
     locationOptions: '.location-item',
     link: '.link-display-wrap',
     linkOptions: '.link-option-item',
-    productDialog: '.add-commodity-dialog:has(input[placeholder="请输入商品ID或关键词"])',
-    productSearch: 'input[placeholder="请输入商品ID或关键词"]',
-    productSearchButton: '.search-icon',
-    productRows: '.ant-table-tbody tr',
-    productLoading: '.common-table-loading',
+    productDialog: '.add-commodity-dialog:not(.finder-common-dialog):has(input[placeholder="请输入商品名称/编码搜索"])',
+    productSearch: 'input[placeholder="请输入商品名称/编码搜索"]',
+    productSearchButton: '.search-btn button',
+    productRows: '.shop-table-wrap .ant-table-tbody > tr',
+    productLoading: '.shop-table-wrap .common-table-loading',
     productCheckbox: 'input.ant-checkbox-input',
     button: 'button',
     confirmation: '.intercept-original-dialog .weui-desktop-dialog__wrp',
     success: '.create-success-dialog .weui-desktop-dialog__wrp',
     errors: '.weui-toptips_error, .post-check-dialog .weui-desktop-dialog__wrp',
 
-    // 需要实测：全部在发布应用的 Shadow DOM 内。null 表示尚未校准。
-    // 预览必须是本次视频生成的封面元素，排除模板图、占位图和 loading。
-    coverPreview: null,
+    // 封面预览只在平台为当前视频生成封面后出现。
+    coverPreview: '.post-upload-wrap .cover-preview-wrap',
     uploadProgress: null, // 选择上传、处理或封面生成期间才显示的节点
     uploadError: null,
     validationError: null, // 匹配实际呈现错误的元素，排除空壳和静态说明
     removeFailedUpload: null,
     removeDialog: null,
     removeConfirm: null, // 相对 removeDialog 的按钮选择器
-    openProductPicker: null, // 选中「商品」后真正打开选品框的可点击元素
-    resultId: null, // 相对商品结果行，元素须展示完整 ID
-    attachedItem: null, // 发布表单中已添加的商品项（匹配全部项）
-    attachedId: null, // 相对已添加商品项，须展示完整 ID
-    timingDialog: null,
-    timingConfirm: null, // 相对 timingDialog；只点击确认，保留原选项
-    // 若 ID 在属性上，例如 data-product-id，在此填写属性名，否则读取文本。
-    resultIdAttribute: null,
-    attachedIdAttribute: null,
+    openProductPicker: '.post-component-choose-wrap',
+    attachedItem: '.link-input-wrap .post-component-choose-wrap',
+    timingDialog: '.weui-desktop-dialog__wrp:has(.visible-options)',
+    timingConfirm: '.weui-desktop-btn_primary', // 只点击确认，保留原选项
   };
   const wording = {
     hideLocation: '不显示位置', product: '商品', publish: '发表',
@@ -102,7 +96,7 @@
   </style>
   <button id="launch">发布助手</button>
   <section id="window" aria-label="主页带货发布助手" hidden>
-    <header class="head"><div><strong>主页带货发布助手</strong><small>v1.1.2 · 逐条选视频</small></div><button id="min" title="收起面板" aria-label="收起面板">−</button></header>
+    <header class="head"><div><strong>主页带货发布助手</strong><small>v1.1.3 · 逐条选视频</small></div><button id="min" title="收起面板" aria-label="收起面板">−</button></header>
     <div class="body">
       <div class="card"><h2>视频清单</h2>
         <fieldset id="editor">
@@ -261,6 +255,9 @@
   function errors(r) {
     if (uploadError(r)) throw Error('上传出错。请删除失败项并确认删除，再选择原视频。');
     if (oneOrAny(r,UI.errors) || oneOrAny(r,UI.validationError)) throw Error('页面显示校验错误，请核对平台提示');
+    const visibleDialog = all(r,'.weui-desktop-dialog__wrp').find(node =>
+      /当前登录账号不是视频号.*管理员或运营者|你还不能发表视频/.test(labelText(node)));
+    if (visibleDialog) throw Error('当前账号没有该视频号的发表权限，请先由管理员开通权限');
   }
   function coverReady(node) {
     if (!node) return false;
@@ -328,15 +325,23 @@
     }
     node.blur();
   }
-  function idFrom(node, attribute) {
-    const text = (attribute ? node?.getAttribute(attribute) : labelText(node))?.trim() || '';
-    return text.match(/^(?:(?:商品\s*ID|商品编号|商品编码|ID)\s*[：:]?\s*)?(\d+)$/i)?.[1] || '';
+  function idCandidates(node) {
+    const values = [labelText(node)];
+    for (const name of ['data-product-id','data-id','data-row-key','productid','product-id']) {
+      const value = node?.getAttribute?.(name);
+      if (value) values.push(value);
+    }
+    return values.flatMap(value => value.match(/\d{8,}/g) || []);
+  }
+  function rowHasId(row, productId) {
+    return idCandidates(row).includes(productId) ||
+      [...row.querySelectorAll('*')].some(node => idCandidates(node).includes(productId));
   }
   function attached(r) {
-    return all(r,UI.attachedItem).map(item => {
-      const node = item.matches(UI.attachedId) ? item : one(item,UI.attachedId,'已添加商品 ID');
-      return idFrom(node,UI.attachedIdAttribute);
-    });
+    const item = one(r,UI.attachedItem,'已添加商品');
+    if (!item || labelText(item).includes('选择需要添加的商品')) return [];
+    const ids = [...new Set([item,...item.querySelectorAll('*')].flatMap(idCandidates))];
+    return ids.length ? ids : ['unverified-product'];
   }
   async function setLocation(r,signal) {
     if (labelText(one(r,UI.location,'位置栏')) !== wording.hideLocation) {
@@ -351,11 +356,10 @@
       [...all(r,'.weui-desktop-dialog__wrp')].find(node => labelText(node).includes(wording.timing));
   }
   async function attachProduct(r,item,signal) {
-    requireConfig(['attachedItem','attachedId']);
     const old = attached(r);
     if (old.length === 1 && old[0] === item.productId && !timing(r)) return;
     if (old.length) throw Error('表单已有商品或商品 ID 无法读取，请在页面核对并移除多余商品');
-    requireConfig(['openProductPicker','resultId','timingDialog','timingConfirm']);
+    requireConfig(['attachedItem','openProductPicker','timingDialog','timingConfirm']);
     if (!one(r,UI.openProductPicker,'打开选品控件')) {
       click(one(r,UI.link,'链接栏'),'链接栏',signal);
       const product = await wait(s => s && all(s,UI.linkOptions).find(e =>
@@ -379,14 +383,14 @@
       if (!current || one(current,UI.productSearch,'商品搜索输入框')?.value !== item.productId) return null;
       if (oneOrAny(current,UI.productLoading)) { resultsChanged = true; return null; }
       const rows = all(current,UI.productRows);
+      const emptyMessage = all(current,'.ant-table-placeholder').some(node => /暂无商品|暂无数据/.test(labelText(node)));
+      if (!rows.length && emptyMessage) throw Error('商品列表没有可选商品，请先在视频号小店/选品中心添加商品');
       resultsChanged ||= rows.length !== previousRows.length || rows.some((row,i)=>row !== previousRows[i]) ||
         rows.map(labelText).join('\n') !== previousText;
       if (!resultsChanged) return null;
-      const matches = rows.filter(row => {
-        const node = row.matches(UI.resultId) ? row : one(row,UI.resultId,'结果商品 ID');
-        return idFrom(node,UI.resultIdAttribute) === item.productId;
-      });
+      const matches = rows.filter(row => rowHasId(row,item.productId));
       if (matches.length > 1) throw Error('搜索结果中存在多条相同 ID');
+      if (!matches.length && rows.length) throw Error('搜索结果未显示可核对的完整商品 ID，请在页面人工选择并核实');
       return matches[0] && one(matches[0],UI.productCheckbox,'匹配商品的复选框');
     },'完全匹配的商品 ID 搜索结果',signal);
     if (!checked.checked) click(checked,'选择匹配商品',signal);
@@ -396,9 +400,8 @@
       const selected = all(current,UI.productRows).filter(row => one(row,UI.productCheckbox,'商品复选框')?.checked);
       if (selected.length !== 1) return null;
       const row = selected[0];
-      const id = row.matches(UI.resultId) ? row : one(row,UI.resultId,'结果商品 ID');
-      if (idFrom(id,UI.resultIdAttribute) !== item.productId) throw Error('选中的商品 ID 与清单不符');
-      return all(current,UI.button).find(button => /^添加\s*[（(]1[）)]$/.test(labelText(button)) && enabled(button));
+      if (!rowHasId(row,item.productId)) throw Error('选中的商品 ID 与清单不符');
+      return all(current,UI.button).find(button => /^添加(?:\s*[（(]1[）)])?$/.test(labelText(button)) && enabled(button));
     },'唯一已选商品的添加按钮',signal);
     click(add,'添加(1)',signal);
     let stableSince = 0;
@@ -572,7 +575,7 @@
       showItem(item,index,jobs.length);
       const r = await wait(s=>s,'发布表单',signal);
       errors(r);
-      requireConfig(['coverPreview','uploadProgress','uploadError','validationError']);
+      requireConfig(['coverPreview']);
       watchFile(r);
       if (oneOrAny(r,UI.uploadButton) && !oneOrAny(r,UI.coverPreview) && !oneOrAny(r,UI.uploadProgress)) {
         fileObservation = null;

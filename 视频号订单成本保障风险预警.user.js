@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频号订单成本保障风险预警
 // @namespace    local.channels.cost-protection-risk
-// @version      0.1.2
+// @version      0.1.3
 // @description  扫描在投标准订单，估算成交出价订单的成本保障风险并由用户决定是否发起结束
 // @match        https://channels.weixin.qq.com/promote/*
 // @run-at       document-idle
@@ -90,8 +90,14 @@
     return Number.isInteger(fromInput) && fromInput > 0 ? fromInput : 1;
   }
   function maxPage() {
-    const nums = [...document.querySelectorAll('.finder-ui-desktop-pagination__num')].map(el => Number(clean(el.innerText))).filter(Number.isInteger);
+    const pager = document.querySelector('.finder-ui-desktop-pagination');
+    const nums = [...(pager?.querySelectorAll('.finder-ui-desktop-pagination__num') || [])]
+      .map(el => Number(clean(el.innerText))).filter(value => Number.isInteger(value) && value > 0);
     return Math.max(1, ...nums);
+  }
+  function orderTotal() {
+    const match = document.body.innerText.match(/订单总数（\s*([\d,]+)\s*）/);
+    return match ? number(match[1]) : null;
   }
   function setInput(input, value) {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -140,6 +146,11 @@
       .map(li => clean(li.querySelector('[title]')?.getAttribute('title') || li.innerText))
       .filter(label => summary.includes(label));
   }
+  function checkedStatuses(field = statusFilter()) {
+    return [...field.querySelectorAll('li')]
+      .filter(li => li.classList.contains('checked'))
+      .map(li => clean(li.querySelector('[title]')?.getAttribute('title') || li.innerText));
+  }
   async function setStatusFilters(statuses) {
     const field = statusFilter();
     field.querySelector('dt')?.click();
@@ -147,44 +158,48 @@
     while (Date.now() < deadline && getComputedStyle(field.querySelector('.finder-ui-desktop-dropdown-menu'))?.display === 'none') {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
+    if (getComputedStyle(field.querySelector('.finder-ui-desktop-dropdown-menu'))?.display === 'none') {
+      throw new Error('无法打开平台订单状态筛选菜单');
+    }
     const desired = new Set(statuses);
     for (const li of field.querySelectorAll('li')) {
       const label = clean(li.querySelector('[title]')?.getAttribute('title') || li.innerText);
-      const currentlySelected = selectedStatuses(field).includes(label);
+      const currentlySelected = checkedStatuses(field).includes(label);
       if (currentlySelected !== desired.has(label)) {
         li.querySelector('.finder-ui-desktop-dropdown__list-ele-contain')?.click();
         const changeDeadline = Date.now() + 1000;
-        while (Date.now() < changeDeadline && selectedStatuses(field).includes(label) !== desired.has(label)) {
+        while (Date.now() < changeDeadline && checkedStatuses(field).includes(label) !== desired.has(label)) {
           await new Promise(resolve => setTimeout(resolve, 50));
         }
       }
     }
-    const actual = selectedStatuses(field);
+    const actual = checkedStatuses(field);
     if (actual.length !== desired.size || actual.some(label => !desired.has(label))) {
       throw new Error('无法确认平台订单状态筛选已设置');
     }
   }
   async function applyStatusFilter() {
-    const beforeTotal = clean(document.body.innerText.match(/订单总数（[^）]+）/)?.[0]);
-    const beforeSignature = rowsSignature();
+    const beforeTotal = orderTotal();
+    const alreadyFiltered = selectedStatuses().length === 1 && selectedStatuses()[0] === '加热中';
     const button = [...document.querySelectorAll('.finder-card button')].find(el => clean(el.innerText) === '筛选');
     if (!button) throw new Error('找不到平台“筛选”按钮');
     button.click();
     const deadline = Date.now() + 15000;
-    let last = '';
-    let stable = 0;
+    let totalDecreased = false;
     while (Date.now() < deadline) {
       if (!isList()) throw new Error('筛选期间已离开标准订单列表');
       const rows = readRows();
-      const signature = rowsSignature(rows);
-      const total = clean(document.body.innerText.match(/订单总数（[^）]+）/)?.[0]);
-      if ((total && total !== beforeTotal) || (signature && signature !== beforeSignature)) {
-        if (signature === last) { if (!stable) stable = Date.now(); if (Date.now() - stable > 400) return; }
-        else { last = signature; stable = 0; }
+      const total = orderTotal();
+      const onlyActive = rows.length > 0 && rows.every(row => /加热中|投放中/.test(row.status) && !/已结束|已取消|审核未通过/.test(row.status));
+      if (total !== null && beforeTotal !== null && total < beforeTotal) totalDecreased = true;
+      if ((totalDecreased || alreadyFiltered) && onlyActive) {
+        return;
       }
       await new Promise(resolve => setTimeout(resolve, 150));
     }
-    throw new Error('等待平台应用“加热中”筛选超时，未开始扫描');
+    throw new Error(totalDecreased
+      ? '平台筛选后仍读到非在投订单，已停止扫描，结果未完成'
+      : '平台订单总数未因“加热中”筛选减少，已停止扫描，未把当前页当作完整结果');
   }
   function assess(row, minimumRoi) {
     const active = /加热中|投放中/.test(row.status) && !/已结束|已取消|审核未通过/.test(row.status);
@@ -230,12 +245,15 @@
       await applyStatusFilter();
       await new Promise(resolve => setTimeout(resolve, 300));
       const pages = maxPage();
-      if (pages > 20) throw new Error('“加热中”筛选后页数仍超过20，已停止扫描以避免读取历史订单');
+      if (pages > 20) throw new Error('“加热中”筛选后仍超过20页，已停止扫描以避免读取过大的结果集');
       state.totalPages = pages;
       const found = new Map();
       for (let page = 1; page <= pages; page++) {
         if (!isList() || accountName() !== account) throw new Error('扫描期间页面或账户发生变化，已停止');
         const rows = await gotoPage(page);
+        if (!rows.length || rows.some(row => !/加热中|投放中/.test(row.status) || /已结束|已取消|审核未通过/.test(row.status))) {
+          throw new Error(`第 ${page} 页含非在投订单或未读到订单，已停止并标记为未完成`);
+        }
         for (const row of rows) found.set(row.id, { ...row, page });
         state.rows = [...found.values()]; state.page = page; render();
       }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频号订单成本保障风险预警
 // @namespace    local.channels.cost-protection-risk
-// @version      0.1.8
+// @version      0.1.9
 // @description  按ROI范围扫描在投标准订单，估算成本保障风险并由用户决定是否停止加热
 // @match        https://channels.weixin.qq.com/promote/*
 // @run-at       document-idle
@@ -218,12 +218,14 @@
   }
   async function setStatusFilters(statuses) {
     const field = statusFilter();
-    field.querySelector('dt')?.click();
+    const menu = field.querySelector('.finder-ui-desktop-dropdown-menu');
+    const isMenuOpen = () => menu && getComputedStyle(menu).display !== 'none';
+    if (!isMenuOpen()) field.querySelector('dt')?.click();
     const deadline = Date.now() + 3000;
-    while (Date.now() < deadline && getComputedStyle(field.querySelector('.finder-ui-desktop-dropdown-menu'))?.display === 'none') {
+    while (Date.now() < deadline && !isMenuOpen()) {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-    if (getComputedStyle(field.querySelector('.finder-ui-desktop-dropdown-menu'))?.display === 'none') {
+    if (!isMenuOpen()) {
       throw new Error('无法打开平台订单状态筛选菜单');
     }
     const desired = new Set(statuses);
@@ -242,29 +244,43 @@
     if (actual.length !== desired.size || actual.some(label => !desired.has(label))) {
       throw new Error('无法确认平台订单状态筛选已设置');
     }
+    if (isMenuOpen()) field.querySelector('dt')?.click();
+    const closeDeadline = Date.now() + 2000;
+    while (Date.now() < closeDeadline && isMenuOpen()) await new Promise(resolve => setTimeout(resolve, 50));
+    if (isMenuOpen()) throw new Error('订单状态菜单未能收起，未提交筛选');
   }
-  async function applyStatusFilter() {
+  async function applyStatusFilter(expectedStatuses) {
     const beforeTotal = orderTotal();
-    const alreadyFiltered = selectedStatuses().length === 1 && selectedStatuses()[0] === '加热中';
+    const beforeSignature = rowsSignature();
+    const expected = new Set(expectedStatuses);
+    const alreadyApplied = selectedStatuses().length === expected.size && selectedStatuses().every(label => expected.has(label));
     const button = [...document.querySelectorAll('.finder-card button')].find(el => clean(el.innerText) === '筛选');
     if (!button) throw new Error('找不到平台“筛选”按钮');
     button.click();
     const deadline = Date.now() + 15000;
-    let totalDecreased = false;
+    let lastSignature = '';
+    let stableSince = 0;
     while (Date.now() < deadline) {
       if (!isList()) throw new Error('筛选期间已离开标准订单列表');
       const rows = readRows();
       const total = orderTotal();
-      const onlyActive = rows.length > 0 && rows.every(row => /加热中|投放中/.test(row.status) && !/已结束|已取消|审核未通过/.test(row.status));
-      if (total !== null && beforeTotal !== null && total < beforeTotal) totalDecreased = true;
-      if ((totalDecreased || alreadyFiltered) && onlyActive) {
-        return;
+      const signature = rowsSignature(rows);
+      const rowsMatch = expected.size === 0
+        ? true
+        : rows.length > 0 && rows.every(row => [...expected].some(status => row.status.includes(status)));
+      const changed = (total !== null && beforeTotal !== null && total !== beforeTotal) || signature !== beforeSignature;
+      if (signature && signature === lastSignature) {
+        if (!stableSince) stableSince = Date.now();
+        if (Date.now() - stableSince >= 350 && rowsMatch && (changed || alreadyApplied)) return;
+      } else {
+        lastSignature = signature;
+        stableSince = 0;
       }
       await new Promise(resolve => setTimeout(resolve, 150));
     }
-    throw new Error(totalDecreased
-      ? '平台筛选后仍读到非在投订单，已停止扫描，结果未完成'
-      : '平台订单总数未因“加热中”筛选减少，已停止扫描，未把当前页当作完整结果');
+    throw new Error(expected.has('加热中')
+      ? '已勾选“加热中”并点击筛选，但列表仍未确认只显示在投订单，已停止扫描，结果未完成'
+      : '已提交恢复原订单状态筛选，但平台列表未确认更新，已停止扫描，结果未完成');
   }
   function assess(row) {
     const active = /加热中|投放中/.test(row.status) && !/已结束|已取消|审核未通过/.test(row.status);
@@ -333,7 +349,7 @@
       originalStatuses = checkedStatuses();
       filterChanged = true;
       await setStatusFilters(['加热中']);
-      await applyStatusFilter();
+      await applyStatusFilter(['加热中']);
       await new Promise(resolve => setTimeout(resolve, 300));
       const pages = maxPage();
       if (pages > 20) throw new Error('“加热中”筛选后仍超过20页，已停止扫描以避免读取过大的结果集');
@@ -355,7 +371,7 @@
       if (isList() && accountName() === account && filterChanged) {
         try {
           await setStatusFilters(originalStatuses);
-          await applyStatusFilter();
+          await applyStatusFilter(originalStatuses);
           const restoredPage = Math.min(startPage, maxPage());
           if (pageNumber() !== restoredPage) await gotoPage(restoredPage);
         } catch (restoreError) {

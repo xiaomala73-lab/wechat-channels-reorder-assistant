@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频号订单成本保障风险预警
 // @namespace    local.channels.cost-protection-risk
-// @version      0.1.6
+// @version      0.1.8
 // @description  按ROI范围扫描在投标准订单，估算成本保障风险并由用户决定是否停止加热
 // @match        https://channels.weixin.qq.com/promote/*
 // @run-at       document-idle
@@ -101,6 +101,13 @@
     const parsed = Number(normalized);
     return Number.isFinite(parsed) ? parsed : null;
   }
+  function roiNumber(value) {
+    const normalized = clean(value).normalize('NFKC').replace(/,/g, '');
+    const match = normalized.match(/-?(?:\d+\.?\d*|\.\d+)/);
+    if (!match) return null;
+    const parsed = Number(match[0]);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
   function orderTable() {
     return [...document.querySelectorAll('table')].find(table => {
       const header = [...table.querySelectorAll('thead tr')].flatMap(row => [...row.cells]).map(cell => clean(cell.innerText));
@@ -127,7 +134,7 @@
       const progress = clean(cells[index('投放进度')]?.innerText).normalize('NFKC').match(/([\d,.]+)\s*\/\s*[￥¥]?\s*([\d,.]+)/);
       const bidText = clean(cells[index('出价(ROI)')]?.innerText);
       const bid = number(bidText);
-      const roi = number(cells[index('直接成交ROI')]?.innerText);
+      const roi = roiNumber(cells[index('直接成交ROI')]?.innerText);
       const count = number(cells[index('直接成交订单数')]?.innerText);
       const amountIndex = index('直接成交金额');
       const name = first.split(/短视频加热|直播加热/)[0].trim();
@@ -300,6 +307,18 @@
       unknown: matches.filter(row => !row.estimate || !Number.isFinite(row.estimate.ratio))
     };
   }
+  function readRoiRange() {
+    const minText = shadow.querySelector('#minimum')?.value.trim() || '';
+    const maxText = shadow.querySelector('#maximum')?.value.trim() || '';
+    const min = minText === '' ? null : Number(minText);
+    const max = maxText === '' ? null : Number(maxText);
+    if (min === null && max === null) throw new Error('请至少填写 ROI 下限或上限');
+    if ((min !== null && (!Number.isFinite(min) || min < 0)) || (max !== null && (!Number.isFinite(max) || max < 0))) throw new Error('ROI 上下限须为0或正数');
+    if (min !== null && max !== null && min > max) throw new Error('ROI 下限不能大于上限');
+    defaults.roiMinimum = minText;
+    defaults.roiMaximum = maxText;
+    GM_setValue(PREF_KEY, defaults);
+  }
   async function scan() {
     if (state.scanning) return;
     if (!isList()) { state.error = '请先进入视频号加热平台 → 订单管理 → 标准订单'; render(); return; }
@@ -311,7 +330,7 @@
     let originalStatuses = [];
     let filterChanged = false;
     try {
-      originalStatuses = selectedStatuses();
+      originalStatuses = checkedStatuses();
       filterChanged = true;
       await setStatusFilters(['加热中']);
       await applyStatusFilter();
@@ -434,25 +453,24 @@
       return `<article class="item"><div class="itemTop"><b>${esc(row.name || '未命名')} · ${esc(row.id)}</b>${showRiskBadge ? `<span class="badge">${row.risk ? '超过赔付线' : '未超过赔付线'}</span>` : '<span class="badge">待核实</span>'}</div><div class="meta">${esc(row.promoteType)} · 第 ${row.page} 页 · ${esc(row.status)}</div><div class="meta">${metrics}</div><div class="meta flag">${esc(row.note)}</div><div class="itemActions"><button class="btn danger" data-pause="${esc(row.id)}" ${state.stopping?'disabled':''}>停止加热</button></div></article>`;
     }).join('') : '<div class="muted">此分组暂无订单。</div>';
     const groupCard = (title, key, rows) => `<section class="card"><div class="title">${title} · ${rows.length} 笔</div><button class="btn danger batch" data-bulk="${key}" ${!state.complete || state.stopping || !rows.length ? 'disabled' : ''}>一键停止本组 ${rows.length} 笔</button><div class="list">${renderItems(rows, true)}</div></section>`;
+    const roiRangeLabel = defaults.roiMinimum !== '' && defaults.roiMaximum !== '' ? `ROI ${defaults.roiMinimum}–${defaults.roiMaximum}` : defaults.roiMinimum !== '' ? `ROI ≥ ${defaults.roiMinimum}` : defaults.roiMaximum !== '' ? `ROI ≤ ${defaults.roiMaximum}` : '未设置 ROI 范围';
+    const readableRoiCount = state.rows.filter(row => Number.isFinite(row.roi)).length;
     const progressLabel = state.scanning
       ? state.page ? `正在扫描第 ${state.page}/${state.totalPages} 页 · 已读取 ${state.rows.length} 笔` : '正在应用“加热中”筛选…'
-      : state.complete ? `扫描完成 · 共读取 ${state.rows.length} 笔在投订单` : '尚未完成扫描';
+      : state.complete ? `扫描完成 · ${roiRangeLabel} · 在投 ${state.rows.length} 笔 · ROI 已读取 ${readableRoiCount} 笔 / 未读取 ${state.rows.length - readableRoiCount} 笔` : '尚未完成扫描';
     const position = currentPosition();
     shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${open ? 'none' : 'block'}">成本风险</button><section class="panel" style="left:${position.left}px;top:${position.top}px;display:${open ? 'flex' : 'none'}"><header class="head"><div><strong>视频号成本保障风险预警</strong><small>趋势估算 · 不代表平台确认赔付</small></div><button id="min" title="最小化">−</button></header><main class="body"><section class="card"><div class="title">账户与扫描</div><div class="muted">${esc(state.account || accountName() || '尚未识别账户')}</div><div class="rangeRow"><div class="rangeField"><label for="minimum">ROI ≥</label><input id="minimum" inputmode="decimal" placeholder="不限" value="${esc(defaults.roiMinimum)}" ${state.scanning || state.stopping?'disabled':''}></div><div class="rangeField"><label for="maximum">ROI ≤</label><input id="maximum" inputmode="decimal" placeholder="不限" value="${esc(defaults.roiMaximum)}" ${state.scanning || state.stopping?'disabled':''}></div></div><div class="hint">填写上下限可筛选区间；只填“ROI ≤”即可按低 ROI 筛选。</div><div class="row"><button class="btn primary" id="scan" ${state.scanning || state.stopping?'disabled':''}>${state.scanning?'正在扫描…':'扫描加热中的订单'}</button></div><div class="status" style="margin-top:9px">${state.stopping ? esc(state.stopProgress) : progressLabel}</div>${state.scanning ? `<div class="progress ${state.page ? '' : 'indeterminate'}"><span style="width:${state.page ? progressPercent : 35}%"></span></div>` : ''}<div class="hint">临时筛选“加热中”并扫描全部分页，结束后恢复原筛选与页码。预测比例严格超过 120% 归为超过赔付线。</div></section>${state.complete ? `<section class="card"><div class="title">扫描汇总</div><div class="stats"><div class="stat"><b>${state.rows.length}</b><span>读取订单</span></div><div class="stat"><b>${activeCount}</b><span>在投订单</span></div><div class="stat"><b>${list.length}</b><span>ROI 条件命中</span></div></div></section>${groupCard('未超过赔付线', 'below', groups.below)}${groupCard('超过赔付线', 'above', groups.above)}<section class="card"><div class="title">暂无法判断 · ${groups.unknown.length} 笔</div><div class="hint">ROI 出价或缺少成交样本，无法可靠估算赔付线；不会误归入未超过线。</div><div class="list">${renderItems(groups.unknown, false)}</div></section>` : `<section class="card"><div class="title">扫描结果</div><div class="muted">扫描完成后按 ROI 条件和预测赔付线分组显示订单。</div></section>`}${state.error ? `<div class="error">${esc(state.error)}</div>` : ''}<section class="card"><div class="title">判定与操作</div><div class="muted">趋势估算使用当前成交成本外推。平台有效成交、支付方式及其他赔付资格仍需人工核实。停止前逐单复核编号、状态和指标；批量操作出现平台确认窗口时会暂停。</div></section></main></section>`;
     bindPanelDrag();
     shadow.querySelector('#launch')?.addEventListener('click', () => { open = true; render(); });
     shadow.querySelector('#min')?.addEventListener('click', () => { open = false; render(); });
     shadow.querySelector('#scan')?.addEventListener('click', () => {
-      const minText = shadow.querySelector('#minimum')?.value.trim() || '';
-      const maxText = shadow.querySelector('#maximum')?.value.trim() || '';
-      const min = minText === '' ? null : Number(minText);
-      const max = maxText === '' ? null : Number(maxText);
-      if (min === null && max === null) { state.error = '请至少填写 ROI 下限或上限'; render(); return; }
-      if ((min !== null && (!Number.isFinite(min) || min < 0)) || (max !== null && (!Number.isFinite(max) || max < 0))) { state.error = 'ROI 上下限须为0或正数'; render(); return; }
-      if (min !== null && max !== null && min > max) { state.error = 'ROI 下限不能大于上限'; render(); return; }
-      defaults.roiMinimum = minText; defaults.roiMaximum = maxText; GM_setValue(PREF_KEY, defaults);
-      scan();
+      try { readRoiRange(); state.error = ''; scan(); }
+      catch (error) { state.error = error.message; render(); }
     });
+    ['#minimum', '#maximum'].forEach(selector => shadow.querySelector(selector)?.addEventListener('change', () => {
+      try { readRoiRange(); state.error = ''; render(); }
+      catch (error) { state.error = error.message; render(); }
+    }));
     shadow.querySelectorAll('[data-pause]').forEach(button => button.addEventListener('click', () => startPauseFlow(button.dataset.pause)));
     shadow.querySelectorAll('[data-bulk]').forEach(button => button.addEventListener('click', () => bulkStop(button.dataset.bulk)));
   }

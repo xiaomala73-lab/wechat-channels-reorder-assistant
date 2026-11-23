@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频号主页带货发布助手
 // @namespace    local.channels.home-video-publisher
-// @version      1.1.5
+// @version      1.1.6
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js
 // @match        https://channels.weixin.qq.com/platform/post/create*
@@ -36,9 +36,6 @@
     success: '.create-success-dialog .weui-desktop-dialog__wrp',
     errors: '.weui-toptips_error, .post-check-dialog .weui-desktop-dialog__wrp',
 
-    // 平台为当前视频创建预览后出现；不要求预览图片已经完成解码。
-    coverPreview: '.post-upload-wrap .cover-preview-wrap',
-    uploadProgress: null, // 选择上传、处理或封面生成期间才显示的节点
     openProductPicker: '.post-component-choose-wrap',
     attachedItem: '.link-input-wrap .post-component-choose-wrap',
     timingDialog: '.weui-desktop-dialog__wrp:has(.visible-options)',
@@ -48,14 +45,11 @@
     hideLocation: '不显示位置', product: '商品', publish: '发表',
     direct: '直接发表', timing: '选择商品出现时机',
     uploadError: /网络出错[，,、\s]*请重新上传|上传失败|视频上传出错/,
-    uploadBusy: /正在上传|正在生成封面/,
   };
   const DRAFT = 'publisher.draft.v1';
   const RECEIPTS = 'publisher.receipts.v1';
   const lockName = 'channels-home-video-publisher';
   let run = null;
-  let verifiedCover = null;
-  let recoveryItem = null;
   const host = document.createElement('aside');
   host.id = 'channels-home-video-publisher-panel';
   if (document.getElementById(host.id)) return;
@@ -84,7 +78,7 @@
   </style>
   <button id="launch">发布助手</button>
   <section id="window" aria-label="主页带货发布助手" hidden>
-    <header class="head"><div><strong>主页带货发布助手</strong><small>v1.1.5 · 使用已上传视频</small></div><button id="min" title="收起面板" aria-label="收起面板">−</button></header>
+    <header class="head"><div><strong>主页带货发布助手</strong><small>v1.1.6 · 使用已上传视频</small></div><button id="min" title="收起面板" aria-label="收起面板">−</button></header>
     <div class="body">
       <div class="card"><h2>视频清单</h2>
         <fieldset id="editor">
@@ -103,7 +97,7 @@
         </fieldset>
       </div>
       <div class="card"><h2>执行</h2>
-        <label class="check"><input id="dry" type="checkbox" checked> 试跑（只填写和核验）</label>
+        <label class="check"><input id="dry" type="checkbox"> 试跑（只填写和核验）</label>
         <div class="row"><button id="start" class="primary">开始发布</button><button id="stop" class="danger" disabled>停止/取消</button></div>
       </div>
       <div class="card"><h2>执行状态</h2><div id="current"></div><div id="status" role="status"></div>
@@ -245,17 +239,6 @@
     const visibleDialog = all(r,'.weui-desktop-dialog__wrp').find(node =>
       /当前登录账号不是视频号.*管理员或运营者|你还不能发表视频/.test(labelText(node)));
     if (visibleDialog) throw Error('当前账号没有该视频号的发表权限，请先由管理员开通权限');
-  }
-  function coverSource(node) {
-    const media = node?.matches('img,video') ? node : node?.querySelector('img,video');
-    return media?.currentSrc || media?.getAttribute('src') || media?.getAttribute('poster') || '';
-  }
-  function uploaded(r) {
-    const uploader = r.querySelector('.post-upload-wrap');
-    const preview = one(r,UI.coverPreview,'当前视频预览');
-    return !!uploader && !!preview &&
-      !oneOrAny(r,UI.uploadProgress) &&
-      !wording.uploadBusy.test(labelText(uploader));
   }
   function norm(value) { return value.replace(/\r\n?/g,'\n'); }
   function readValue(node) {
@@ -479,10 +462,6 @@
   }
   function verify(r,item) {
     errors(r);
-    if (!uploaded(r)) throw Error('未检测到已上传视频预览，或平台仍显示上传中；请确认平台状态后重试');
-    const cover = one(r,UI.coverPreview,'当前视频封面');
-    if (verifiedCover?.node !== cover || verifiedCover.source !== coverSource(cover))
-      throw Error('核验期间视频封面发生变化，请重新检查当前视频');
     if (readValue(one(r,UI.description,'视频描述')) !== item.description) throw Error('描述回读与清单不一致');
     if (readValue(one(r,UI.title,'短标题')) !== item.title) throw Error('短标题回读与清单不一致');
     if (labelText(one(r,UI.location,'位置栏')) !== item.location) throw Error('位置回读与清单不一致');
@@ -550,18 +529,10 @@
       }
       if (index === jobs.length) { status('清单各条均已有提交记录，请到视频管理列表核验。'); return; }
       const item = jobs[index];
-      const continuing = recoveryItem?.key === key;
-      recoveryItem = {item,key};
       showItem(item,index,jobs.length);
       const r = await wait(s=>s,'发布表单',signal);
       errors(r);
-      requireConfig(['coverPreview']);
-      const cover = one(r,UI.coverPreview,'当前视频封面');
-      if (!uploaded(r)) throw Error('未检测到已上传视频预览，或平台仍显示上传中；请确认平台状态后重试');
-      if (continuing && verifiedCover && (verifiedCover.node !== cover || verifiedCover.source !== coverSource(cover)))
-        throw Error('当前视频与试跑时的视频不同，请核对视频后重新开始');
-      verifiedCover = {node:cover,source:coverSource(cover)};
-      status('已检测到上传完成的视频，正在填写描述、标题、位置和商品。');
+      status('正在填写描述、短标题、位置和商品。');
       writeValue(one(r,UI.description,'视频描述'),item.description,signal);
       writeValue(one(r,UI.title,'短标题'),item.title,signal);
       await wait(s=>s === r && readValue(one(s,UI.description,'视频描述')) === item.description &&
@@ -573,11 +544,9 @@
       if (dry) { status('试跑通过。请核对平台表单，取消勾选试跑后点击开始发布可继续本条。'); return; }
       status('核验通过，正在发表。');
       await submit(r,item,key,signal);
-      verifiedCover = null; recoveryItem = null;
       status('已提交 / 发表结果待平台核验。准备下一条时，先在发表页上传下一条视频。');
     } catch (error) {
       const entry = key && receipts()[key];
-      if (!entry) { recoveryItem = null; verifiedCover = null; }
       status('已暂停：' + error.message + (entry ? '\n本条已有提交记录，请到视频管理列表核验。' : ''));
     } finally {
       run = null;
@@ -596,7 +565,6 @@
     GM_deleteValue(DRAFT);
     rows = [emptyRow()]; editing = 0; renderEditor();
     $('batch').value = ''; $('current').textContent = '';
-    recoveryItem = null; verifiedCover = null;
     status('清单已清空。提交去重记录仍可用于核验。');
   };
   $('load').onclick = () => { if (!run) $('import').click(); };

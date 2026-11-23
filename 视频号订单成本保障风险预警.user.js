@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频号订单成本保障风险预警
 // @namespace    local.channels.cost-protection-risk
-// @version      0.1.4
+// @version      0.1.5
 // @description  扫描在投标准订单，估算成交出价订单的成本保障风险并由用户决定是否发起结束
 // @match        https://channels.weixin.qq.com/promote/*
 // @run-at       document-idle
@@ -17,7 +17,7 @@
   if (window.top !== window.self || document.getElementById(ROOT)) return;
 
   const PREF_KEY = ROOT + ':preferences:v1';
-  const defaults = Object.assign({ roiMinimum: '1.0' }, GM_getValue(PREF_KEY, {}) || {});
+  const defaults = Object.assign({ roiMinimum: '1.0', panelPosition: null }, GM_getValue(PREF_KEY, {}) || {});
   const state = { scanning: false, complete: false, page: 0, totalPages: 0, account: '', rows: [], error: '' };
   const host = document.createElement('div');
   host.id = ROOT;
@@ -28,9 +28,9 @@
   const css = `<style>
     :host{font:13px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;color:#1e293b}*{box-sizing:border-box}
     button,input{font:inherit}button{cursor:pointer}button:disabled{opacity:.48;cursor:not-allowed}
-    .launcher{pointer-events:auto;position:fixed;right:0;top:57%;z-index:2147483646;width:34px;min-height:122px;border:1px solid #d6e7ff;border-right:0;border-radius:12px 0 0 12px;background:#087bff;color:white;padding:10px 7px;writing-mode:vertical-rl;box-shadow:0 5px 18px #0b64bb44;font-weight:700}
-    .panel{pointer-events:auto;position:fixed;right:12px;top:12px;width:min(410px,calc(100vw - 24px));height:calc(100dvh - 24px);display:flex;flex-direction:column;border:1px solid #dce5f1;border-radius:17px;background:#f8fbff;box-shadow:0 18px 45px #22334d35;overflow:hidden}
-    .head{flex:none;display:flex;align-items:center;justify-content:space-between;padding:13px 15px;background:white;border-bottom:1px solid #e4eaf2}.head strong{font-size:15px}.head small{display:block;color:#738196;font-size:11px}.head button{width:30px;height:30px;border:0;border-radius:50%;background:#eef2f7;color:#5a6473;font-size:19px}
+    .launcher{pointer-events:auto;position:fixed;right:0;top:39%;z-index:2147483646;width:34px;min-height:122px;border:1px solid #d6e7ff;border-right:0;border-radius:12px 0 0 12px;background:#087bff;color:white;padding:10px 7px;writing-mode:vertical-rl;box-shadow:0 5px 18px #0b64bb44;font-weight:700}
+    .panel{pointer-events:auto;position:fixed;width:min(410px,calc(100vw - 24px));height:calc(100dvh - 24px);display:flex;flex-direction:column;border:1px solid #dce5f1;border-radius:17px;background:#f8fbff;box-shadow:0 18px 45px #22334d35;overflow:hidden}
+    .head{flex:none;display:flex;align-items:center;justify-content:space-between;padding:13px 15px;background:white;border-bottom:1px solid #e4eaf2;cursor:move;touch-action:none;user-select:none}.head strong{font-size:15px}.head small{display:block;color:#738196;font-size:11px}.head button{width:30px;height:30px;border:0;border-radius:50%;background:#eef2f7;color:#5a6473;font-size:19px;cursor:pointer}
     .body{min-height:0;overflow:auto;padding:13px}.card{padding:12px;margin-bottom:11px;border:1px solid #e1e8f1;border-radius:12px;background:white}.title{font-weight:700;margin-bottom:7px}.muted{color:#697789;font-size:11px}.hint{color:#697789;font-size:11px;margin-top:7px}.status{padding:9px 10px;background:#eaf3ff;color:#135fae;border-radius:9px;font-weight:700;overflow-wrap:anywhere}
     input{width:100%;padding:8px 9px;border:1px solid #ccd8e8;border-radius:8px;outline:0;background:white;color:#1e293b}input:focus{border-color:#087bff;box-shadow:0 0 0 3px #087bff18}
     .row{display:flex;gap:8px;align-items:center;margin-top:9px}.row label{flex:1;min-width:0}.row input{width:96px;flex:none}.btn{border:1px solid #c9dcf7;border-radius:9px;background:white;color:#0765d5;padding:8px 10px;font-weight:700}.btn.primary{width:100%;background:#087bff;border-color:#087bff;color:white}.btn.danger{color:#c7423d;border-color:#ffd2ce;background:#fff;white-space:nowrap}
@@ -39,6 +39,53 @@
     .list{display:grid;gap:8px;margin-top:9px}.item{padding:10px;border:1px solid #e6ecf3;border-radius:10px;background:#fff}.itemTop{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.item b{min-width:0;overflow-wrap:anywhere}.badge{flex:none;padding:2px 7px;border-radius:99px;background:#fff1e8;color:#a44915;font-size:10px;font-weight:700}.item .meta{margin-top:5px;color:#536273;font-size:11px;overflow-wrap:anywhere}.item .flag{color:#a44915;font-weight:700}.itemActions{display:flex;justify-content:flex-end;margin-top:8px}.error{margin-top:8px;padding:8px 9px;border-radius:8px;background:#fff1f0;color:#a12622;font-weight:700;overflow-wrap:anywhere}
   </style>`;
   let open = false;
+  function clampPosition(left, top) {
+    const panel = shadow.querySelector('.panel');
+    const width = panel?.offsetWidth || Math.min(410, innerWidth - 24);
+    const height = panel?.offsetHeight || innerHeight - 24;
+    return {
+      left: Math.max(8, Math.min(Math.round(left), innerWidth - width - 8)),
+      top: Math.max(8, Math.min(Math.round(top), innerHeight - height - 8))
+    };
+  }
+  function defaultPosition() {
+    const width = Math.min(410, innerWidth - 24);
+    return clampPosition(innerWidth >= 850 ? innerWidth - width - 434 : innerWidth - width - 12, innerWidth >= 850 ? 12 : 62);
+  }
+  function currentPosition() {
+    const saved = defaults.panelPosition;
+    return saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)
+      ? clampPosition(saved.left, saved.top)
+      : defaultPosition();
+  }
+  function bindPanelDrag() {
+    const panel = shadow.querySelector('.panel');
+    const head = shadow.querySelector('.head');
+    if (!panel || !head) return;
+    head.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || event.target.closest('button')) return;
+      const rect = panel.getBoundingClientRect();
+      const offsetX = event.clientX - rect.left;
+      const offsetY = event.clientY - rect.top;
+      head.setPointerCapture(event.pointerId);
+      const move = moveEvent => {
+        const position = clampPosition(moveEvent.clientX - offsetX, moveEvent.clientY - offsetY);
+        defaults.panelPosition = position;
+        panel.style.left = position.left + 'px';
+        panel.style.top = position.top + 'px';
+      };
+      const finish = () => {
+        head.removeEventListener('pointermove', move);
+        head.removeEventListener('pointerup', finish);
+        head.removeEventListener('pointercancel', finish);
+        GM_setValue(PREF_KEY, defaults);
+      };
+      head.addEventListener('pointermove', move);
+      head.addEventListener('pointerup', finish, { once: true });
+      head.addEventListener('pointercancel', finish, { once: true });
+      event.preventDefault();
+    });
+  }
 
   function clean(value) { return String(value == null ? '' : value).trim().replace(/\s+/g, ' '); }
   function esc(value) { return String(value == null ? '' : value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -326,7 +373,9 @@
     const progressLabel = state.scanning
       ? state.page ? `正在扫描第 ${state.page}/${state.totalPages} 页 · 已读取 ${state.rows.length} 笔` : '正在应用“加热中”筛选…'
       : state.complete ? `扫描完成 · 共读取 ${state.rows.length} 笔在投订单` : '尚未完成扫描';
-    shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${open ? 'none' : 'block'}">成本风险</button><section class="panel" style="display:${open ? 'flex' : 'none'}"><header class="head"><div><strong>视频号成本保障风险预警</strong><small>趋势估算 · 不代表平台确认赔付</small></div><button id="min" title="最小化">−</button></header><main class="body"><section class="card"><div class="title">账户与扫描</div><div class="muted">${esc(state.account || accountName() || '尚未识别账户')}</div><div class="row"><label for="minimum">直接成交 ROI 低于</label><input id="minimum" inputmode="decimal" value="${esc(defaults.roiMinimum)}" ${state.scanning?'disabled':''}></div><div class="row"><button class="btn primary" id="scan" ${state.scanning?'disabled':''}>${state.scanning?'正在扫描…':'扫描加热中的订单'}</button></div><div class="status" style="margin-top:9px">${progressLabel}</div>${state.scanning ? `<div class="progress ${state.page ? '' : 'indeterminate'}"><span style="width:${state.page ? progressPercent : 35}%"></span></div>` : ''}<div class="hint">临时筛选“加热中”并扫描全部分页，结束后恢复原筛选与页码。趋势按当前成交成本外推，超过严格 120% 线才标记风险。</div></section><section class="card"><div class="title">扫描结果</div>${state.complete ? `<div class="stats"><div class="stat"><b>${state.rows.length}</b><span>读取订单</span></div><div class="stat"><b>${activeCount}</b><span>在投订单</span></div><div class="stat"><b>${list.length}</b><span>低 ROI 关注</span></div></div>` : ''}<div class="muted" style="margin-top:8px">只有预测比例超过 120% 且 ROI 低于阈值才显示风险操作。平台有效成交、支付方式及其他赔付资格仍需人工核实；ROI 出价订单的预期消耗口径未知。</div>${state.error ? `<div class="error">${esc(state.error)}</div>` : ''}<div class="list">${resultHtml}</div></section><section class="card"><div class="title">操作说明</div><div class="muted">停止前会重新核对订单编号、状态和指标。脚本只打开平台“停止加热”入口；请核对平台提示并逐单确认。</div></section></main></section>`;
+    const position = currentPosition();
+    shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${open ? 'none' : 'block'}">成本风险</button><section class="panel" style="left:${position.left}px;top:${position.top}px;display:${open ? 'flex' : 'none'}"><header class="head"><div><strong>视频号成本保障风险预警</strong><small>趋势估算 · 不代表平台确认赔付</small></div><button id="min" title="最小化">−</button></header><main class="body"><section class="card"><div class="title">账户与扫描</div><div class="muted">${esc(state.account || accountName() || '尚未识别账户')}</div><div class="row"><label for="minimum">直接成交 ROI 低于</label><input id="minimum" inputmode="decimal" value="${esc(defaults.roiMinimum)}" ${state.scanning?'disabled':''}></div><div class="row"><button class="btn primary" id="scan" ${state.scanning?'disabled':''}>${state.scanning?'正在扫描…':'扫描加热中的订单'}</button></div><div class="status" style="margin-top:9px">${progressLabel}</div>${state.scanning ? `<div class="progress ${state.page ? '' : 'indeterminate'}"><span style="width:${state.page ? progressPercent : 35}%"></span></div>` : ''}<div class="hint">临时筛选“加热中”并扫描全部分页，结束后恢复原筛选与页码。趋势按当前成交成本外推，超过严格 120% 线才标记风险。</div></section><section class="card"><div class="title">扫描结果</div>${state.complete ? `<div class="stats"><div class="stat"><b>${state.rows.length}</b><span>读取订单</span></div><div class="stat"><b>${activeCount}</b><span>在投订单</span></div><div class="stat"><b>${list.length}</b><span>低 ROI 关注</span></div></div>` : ''}<div class="muted" style="margin-top:8px">只有预测比例超过 120% 且 ROI 低于阈值才显示风险操作。平台有效成交、支付方式及其他赔付资格仍需人工核实；ROI 出价订单的预期消耗口径未知。</div>${state.error ? `<div class="error">${esc(state.error)}</div>` : ''}<div class="list">${resultHtml}</div></section><section class="card"><div class="title">操作说明</div><div class="muted">停止前会重新核对订单编号、状态和指标。脚本只打开平台“停止加热”入口；请核对平台提示并逐单确认。</div></section></main></section>`;
+    bindPanelDrag();
     shadow.querySelector('#launch')?.addEventListener('click', () => { open = true; render(); });
     shadow.querySelector('#min')?.addEventListener('click', () => { open = false; render(); });
     shadow.querySelector('#scan')?.addEventListener('click', () => {

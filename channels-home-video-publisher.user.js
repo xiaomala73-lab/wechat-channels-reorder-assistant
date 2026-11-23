@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频号主页带货发布助手
 // @namespace    local.channels.home-video-publisher
-// @version      1.1.3
+// @version      1.1.4
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js
 // @match        https://channels.weixin.qq.com/platform/post/create*
@@ -19,8 +19,6 @@
   // 以下非空选择器来自当前发布页 DOM（包括预渲染的隐藏弹窗）。
   const UI = {
     host: 'wujie-app',
-    uploadButton: '.post-upload-wrap .ant-upload-btn',
-    fileInput: '.post-upload-wrap input[type="file"]',
     description: '.input-editor[contenteditable]',
     title: 'input[placeholder="填写短标题有机会获得更多流量"]',
     location: '.position-display-wrap',
@@ -41,11 +39,6 @@
     // 封面预览只在平台为当前视频生成封面后出现。
     coverPreview: '.post-upload-wrap .cover-preview-wrap',
     uploadProgress: null, // 选择上传、处理或封面生成期间才显示的节点
-    uploadError: null,
-    validationError: null, // 匹配实际呈现错误的元素，排除空壳和静态说明
-    removeFailedUpload: null,
-    removeDialog: null,
-    removeConfirm: null, // 相对 removeDialog 的按钮选择器
     openProductPicker: '.post-component-choose-wrap',
     attachedItem: '.link-input-wrap .post-component-choose-wrap',
     timingDialog: '.weui-desktop-dialog__wrp:has(.visible-options)',
@@ -61,13 +54,8 @@
   const RECEIPTS = 'publisher.receipts.v1';
   const lockName = 'channels-home-video-publisher';
   let run = null;
-  let fileObservation = null;
   let verifiedCover = null;
-  let awaitingFile = false;
-  let fileSelectionInvalidated = false;
-  let inputRoot = null;
   let recoveryItem = null;
-  let recovering = false;
   const host = document.createElement('aside');
   host.id = 'channels-home-video-publisher-panel';
   if (document.getElementById(host.id)) return;
@@ -96,17 +84,17 @@
   </style>
   <button id="launch">发布助手</button>
   <section id="window" aria-label="主页带货发布助手" hidden>
-    <header class="head"><div><strong>主页带货发布助手</strong><small>v1.1.3 · 逐条选视频</small></div><button id="min" title="收起面板" aria-label="收起面板">−</button></header>
+    <header class="head"><div><strong>主页带货发布助手</strong><small>v1.1.4 · 使用已上传视频</small></div><button id="min" title="收起面板" aria-label="收起面板">−</button></header>
     <div class="body">
       <div class="card"><h2>视频清单</h2>
         <fieldset id="editor">
           <div class="row"><select id="pick" aria-label="选择要编辑的视频"></select><button id="add" type="button">＋ 添加一条</button><button id="drop" type="button" class="danger">移除</button></div>
-          <label for="path">视频文件路径</label><input id="path" placeholder="直接粘贴 Windows 文件路径">
           <label for="description">视频描述</label><textarea id="description" placeholder="粘贴完整描述，可换行"></textarea>
           <label for="title">短标题</label><input id="title" placeholder="填写短标题">
+          <label for="location">位置</label><input id="location" placeholder="留空默认不显示位置">
           <label for="productId">商品 ID</label><input id="productId" inputmode="numeric" placeholder="粘贴完整商品 ID">
           <details><summary>批量粘贴 / 导入旧清单</summary>
-            <p class="hint">从表格复制四列，按「文件路径、视频描述、短标题、商品 ID」排列，无需复制表头。商品 ID 列请设为文本。</p>
+            <p class="hint">复制四列：视频描述、短标题、位置、商品 ID。也兼容旧版三列清单，位置默认不显示；商品 ID 列请设为文本。</p>
             <textarea id="batch" aria-label="批量粘贴视频清单" placeholder="在这里粘贴表格里的多行"></textarea>
             <div class="row"><button id="paste" type="button">追加到清单</button><button id="load" type="button">导入 JSON 文件</button></div>
             <input id="import" type="file" accept=".json,application/json" hidden>
@@ -119,13 +107,12 @@
         <div class="row"><button id="start" class="primary">开始发布</button><button id="stop" class="danger" disabled>停止/取消</button></div>
       </div>
       <div class="card"><h2>执行状态</h2><div id="current"></div><div id="status" role="status"></div>
-        <div class="row minor"><button id="remove" disabled>删除失败上传</button><button id="copy" disabled>复制当前文件路径</button></div>
       </div>
     </div>
   </section>`;
   const $ = id => panel.getElementById(id);
-  const fields = ['path','description','title','productId'];
-  const fieldLabels = ['视频文件路径','视频描述','短标题','商品 ID'];
+  const fields = ['description','title','location','productId'];
+  const fieldLabels = ['视频描述','短标题','位置','商品 ID'];
   const emptyRow = () => Object.fromEntries(fields.map(field => [field,'']));
   const empty = row => fields.every(field => !row[field].trim());
   let rows = [emptyRow()];
@@ -133,7 +120,7 @@
   function status(message) { $('status').textContent = message; }
   function rowLabel(index) {
     const row = rows[index];
-    return '第 ' + (index+1) + ' 条' + (row.path ? ' · ' + fileName(row.path) : row.title ? ' · ' + row.title : '');
+    return '第 ' + (index+1) + ' 条' + (row.title ? ' · ' + row.title : '');
   }
   function renderEditor() {
     $('pick').replaceChildren(...rows.map((_,index) => new Option(rowLabel(index),String(index))));
@@ -158,10 +145,10 @@
     $('pick').options[editing].textContent = rowLabel(editing);
   };
   $('add').onclick = () => {
-    rows.push({...emptyRow(),productId:rows[editing].productId});
+    rows.push({...emptyRow(),location:rows[editing].location,productId:rows[editing].productId});
     editing = rows.length-1;
     renderEditor();
-    $('path').focus();
+    $('description').focus();
   };
   $('drop').onclick = () => {
     rows.splice(editing,1);
@@ -249,62 +236,36 @@
     if (missing.length) throw Error('请先校准选择器：' + missing.join('、'));
   }
   function uploadError(r) {
-    return !!oneOrAny(r,UI.uploadError) || wording.uploadError.test(labelText(r.querySelector('.post-upload-wrap')));
+    return wording.uploadError.test(labelText(r.querySelector('.post-upload-wrap')));
   }
   function oneOrAny(r, selector) { return all(r,selector).length > 0; }
   function errors(r) {
-    if (uploadError(r)) throw Error('上传出错。请删除失败项并确认删除，再选择原视频。');
-    if (oneOrAny(r,UI.errors) || oneOrAny(r,UI.validationError)) throw Error('页面显示校验错误，请核对平台提示');
+    if (uploadError(r)) throw Error('当前视频上传失败，请在平台处理后再运行脚本');
+    if (oneOrAny(r,UI.errors)) throw Error('页面显示校验错误，请核对平台提示');
     const visibleDialog = all(r,'.weui-desktop-dialog__wrp').find(node =>
       /当前登录账号不是视频号.*管理员或运营者|你还不能发表视频/.test(labelText(node)));
     if (visibleDialog) throw Error('当前账号没有该视频号的发表权限，请先由管理员开通权限');
   }
   function coverReady(node) {
     if (!node) return false;
-    if (node.tagName === 'IMG') return node.complete && node.naturalWidth > 0;
-    return true; // 非 img 选择器须限定为封面已生成时的节点
+    const image = node.tagName === 'IMG' ? node : node.querySelector('img');
+    return !!image && image.complete && image.naturalWidth > 0;
+  }
+  function coverSource(node) {
+    const image = node?.tagName === 'IMG' ? node : node?.querySelector('img');
+    return image?.currentSrc || image?.getAttribute('src') || '';
   }
   function uploaded(r) {
     return !oneOrAny(r,UI.uploadProgress) &&
       !wording.uploadBusy.test(labelText(r.querySelector('.post-upload-wrap'))) &&
       coverReady(one(r,UI.coverPreview,'当前视频封面'));
   }
-  function watchFile(r) {
-    if (inputRoot === r) return;
-    inputRoot?.removeEventListener('change',onFile,true);
-    inputRoot?.removeEventListener('drop',onDrop,true);
-    inputRoot = r;
-    r.addEventListener('change',onFile,true);
-    r.addEventListener('drop',onDrop,true);
-  }
-  function onDrop(event) {
-    if (!recoveryItem || !event.dataTransfer?.types.includes('Files')) return;
-    fileSelectionInvalidated = true;
-    fileObservation = null;
-    verifiedCover = null;
-  }
-  function onFile(event) {
-    const input = event.composedPath()[0];
-    if (!recoveryItem || !event.isTrusted || !input?.matches?.(UI.fileInput)) return;
-    const files = input.files;
-    if (!files?.length) return;
-    if (!run || !awaitingFile) {
-      fileSelectionInvalidated = true;
-      fileObservation = null;
-      verifiedCover = null;
-      return;
-    }
-    awaitingFile = false;
-    verifiedCover = null;
-    fileObservation = {name:files[0].name, count:files.length};
-  }
-  function fileName(path) { return path.split(/[\\/]/).at(-1); }
   function norm(value) { return value.replace(/\r\n?/g,'\n'); }
   function readValue(node) {
     if (!node) throw Error('描述或短标题控件未找到');
     return norm(node.isContentEditable ? node.innerText : node.value);
   }
-  function writeValue(node, value, signal) {
+  function writeValue(node, value, signal, blur=true) {
     checkRun(signal);
     if (!node || !visible(node) || node.disabled || node.readOnly) throw Error('填写控件不可用');
     if (readValue(node) === value) return;
@@ -323,7 +284,7 @@
       node.dispatchEvent(new win.Event('input',{bubbles:true,composed:true}));
       node.dispatchEvent(new win.Event('change',{bubbles:true}));
     }
-    node.blur();
+    if (blur) node.blur();
   }
   function idCandidates(node) {
     const values = [labelText(node)];
@@ -343,13 +304,23 @@
     const ids = [...new Set([item,...item.querySelectorAll('*')].flatMap(idCandidates))];
     return ids.length ? ids : ['unverified-product'];
   }
-  async function setLocation(r,signal) {
-    if (labelText(one(r,UI.location,'位置栏')) !== wording.hideLocation) {
+  async function setLocation(r,wanted,signal) {
+    if (labelText(one(r,UI.location,'位置栏')) !== wanted) {
       click(one(r,UI.location,'位置栏'),'位置栏',signal);
-      const option = await wait(s => s && exact(s,UI.locationOptions,wording.hideLocation),'不显示位置选项',signal);
-      click(option,wording.hideLocation,signal);
+      let searched = false;
+      const option = await wait(s => {
+        if (!s) return null;
+        const match = exact(s,UI.locationOptions,wanted);
+        if (match) return match;
+        if (!searched && wanted !== wording.hideLocation) {
+          const search = one(s,'input[placeholder="搜索附近位置"]','位置搜索框');
+          if (search) { writeValue(search,wanted,signal,false); searched = true; }
+        }
+        return null;
+      },'位置选项「' + wanted + '」',signal);
+      click(option,wanted,signal);
     }
-    await wait(s => s && labelText(one(s,UI.location,'位置栏')) === wording.hideLocation,'位置回读',signal);
+    await wait(s => s && labelText(one(s,UI.location,'位置栏')) === wanted,'位置回读',signal);
   }
   function timing(r) {
     return one(r,UI.timingDialog,'商品出现时机弹窗') ||
@@ -431,13 +402,19 @@
     if (!list.length) throw Error('清单为空');
     return list.map((row,index) => {
       const prefix = '第 ' + (index+offset+1) + ' 条';
-      for (const [i,field] of fields.entries()) {
+      for (const field of ['description','title','productId']) {
+        const i = fields.indexOf(field);
         if (typeof row?.[field] !== 'string' || !row[field].trim()) throw Error(prefix + '请填写' + fieldLabels[i]);
       }
-      const path = row.path.trim().replace(/^"(.*)"$/,'$1'), productId = row.productId.trim();
-      if (!/^[A-Za-z]:[\\/]|^\\\\/.test(path) || !fileName(path)) throw Error(prefix + '需要 Windows 视频完整路径');
+      const productId = row.productId.trim();
       if (!/^\d+$/.test(productId)) throw Error(prefix + '的商品 ID 必须是完整数字，请检查表格是否转为科学计数法');
-      return {path,description:norm(row.description),title:norm(row.title),productId};
+      return {
+        description:norm(row.description),
+        title:norm(row.title),
+        location:typeof row.location === 'string' && row.location.trim() ? row.location.trim() : wording.hideLocation,
+        productId,
+        _legacyPath: typeof row.path === 'string' ? row.path : row._legacyPath || '',
+      };
     });
   }
   function parseJobs() {
@@ -463,7 +440,7 @@
         }
       } else if (!cell && !closed && ch === '"') quoted = true;
       else {
-        if (closed) throw Error('表格引号格式异常，请从原表格重新复制四列');
+        if (closed) throw Error('表格引号格式异常，请从原表格重新复制三列或四列');
         cell += ch;
       }
     }
@@ -471,7 +448,8 @@
     row.push(cell);
     if (row.some(value => value.trim())) table.push(row);
     return table.map((cells,index) => {
-      if (cells.length !== fields.length) throw Error('粘贴的第 ' + (index+1) + ' 行应有四列');
+      if (cells.length === 3) return {description:cells[0],title:cells[1],location:'',productId:cells[2]};
+      if (cells.length !== fields.length) throw Error('粘贴的第 ' + (index+1) + ' 行应有三列或四列');
       return Object.fromEntries(fields.map((key,i)=>[key,cells[i]]));
     });
   }
@@ -485,8 +463,15 @@
       status('已追加 ' + incoming.length + ' 条。保存清单后可以跨页面继续。');
     } catch (error) { status('批量粘贴失败：' + error.message); }
   };
-  async function fingerprint(item) {
-    const bytes = new TextEncoder().encode(JSON.stringify([fileName(item.path).toLowerCase(),item.description,item.title,item.productId]));
+  async function fingerprint(item,index) {
+    const bytes = new TextEncoder().encode(JSON.stringify([index,item.description,item.title,item.location,item.productId]));
+    const digest = await crypto.subtle.digest('SHA-256',bytes);
+    return [...new Uint8Array(digest)].map(n => n.toString(16).padStart(2,'0')).join('');
+  }
+  async function legacyFingerprint(item) {
+    if (!item._legacyPath) return '';
+    const name = item._legacyPath.split(/[\\/]/).at(-1).toLowerCase();
+    const bytes = new TextEncoder().encode(JSON.stringify([name,item.description,item.title,item.productId]));
     const digest = await crypto.subtle.digest('SHA-256',bytes);
     return [...new Uint8Array(digest)].map(n => n.toString(16).padStart(2,'0')).join('');
   }
@@ -497,14 +482,13 @@
   }
   function verify(r,item) {
     errors(r);
-    if (fileSelectionInvalidated || !uploaded(r) || !fileObservation || fileObservation.count !== 1 ||
-        fileObservation.name.toLowerCase() !== fileName(item.path).toLowerCase()) throw Error('视频选择记录、上传完成状态或封面未通过核验');
+    if (!uploaded(r)) throw Error('当前视频尚未上传完成或封面尚未生成，请先在平台完成上传');
     const cover = one(r,UI.coverPreview,'当前视频封面');
-    if (verifiedCover?.node !== cover || verifiedCover.source !== (cover.currentSrc || cover.getAttribute('src')))
-      throw Error('封面预览在核验后发生变化，请重新选择视频');
+    if (verifiedCover?.node !== cover || verifiedCover.source !== coverSource(cover))
+      throw Error('核验期间视频封面发生变化，请重新检查当前视频');
     if (readValue(one(r,UI.description,'视频描述')) !== item.description) throw Error('描述回读与清单不一致');
     if (readValue(one(r,UI.title,'短标题')) !== item.title) throw Error('短标题回读与清单不一致');
-    if (labelText(one(r,UI.location,'位置栏')) !== wording.hideLocation) throw Error('位置未显示为「不显示位置」');
+    if (labelText(one(r,UI.location,'位置栏')) !== item.location) throw Error('位置回读与清单不一致');
     const ids = attached(r);
     if (ids.length !== 1 || ids[0] !== item.productId) throw Error('表单中的商品 ID 未通过精确核验');
     if (timing(r) || one(r,UI.productDialog,'商品搜索弹窗')) throw Error('商品弹窗仍在打开，请完成确认');
@@ -546,11 +530,10 @@
     });
   }
   function showItem(item,index,length) {
-    $('current').textContent = '第 ' + (index+1) + ' / ' + length + ' 条\n' + item.path;
-    $('copy').disabled = false;
+    $('current').textContent = '第 ' + (index+1) + ' / ' + length + ' 条\n' + item.title;
   }
   async function start() {
-    if (run || recovering) return;
+    if (run) return;
     const controller = new AbortController();
     run = controller;
     const {signal} = controller;
@@ -561,8 +544,9 @@
       const jobs = parseJobs();
       let index = 0;
       for (;index < jobs.length;index++) {
-        key = await fingerprint(jobs[index]);
-        const state = receipts()[key]?.stage;
+        key = await fingerprint(jobs[index],index);
+        const oldKey = await legacyFingerprint(jobs[index]);
+        const state = (receipts()[key] || (oldKey && receipts()[oldKey]))?.stage;
         if (state === 'submitted') continue;
         if (state) throw Error('第 ' + (index+1) + ' 条有未核实的提交记录，请先检查视频管理列表');
         break;
@@ -570,91 +554,41 @@
       if (index === jobs.length) { status('清单各条均已有提交记录，请到视频管理列表核验。'); return; }
       const item = jobs[index];
       const continuing = recoveryItem?.key === key;
-      if (!continuing) { fileObservation = null; verifiedCover = null; }
       recoveryItem = {item,key};
       showItem(item,index,jobs.length);
       const r = await wait(s=>s,'发布表单',signal);
       errors(r);
       requireConfig(['coverPreview']);
-      watchFile(r);
-      if (oneOrAny(r,UI.uploadButton) && !oneOrAny(r,UI.coverPreview) && !oneOrAny(r,UI.uploadProgress)) {
-        fileObservation = null;
-        verifiedCover = null;
-        fileSelectionInvalidated = false;
-      }
-      if (!fileObservation) {
-        if (oneOrAny(r,UI.coverPreview) || oneOrAny(r,UI.uploadProgress) || !oneOrAny(r,UI.uploadButton))
-          throw Error('当前不是空白上传区，请确认旧视频状态并打开空白发表页');
-        const upload = one(r,UI.uploadButton,'上传入口');
-        awaitingFile = true;
-        upload.scrollIntoView({block:'center'});
-        status('请点击平台上传区域，在 Windows 文件选择窗口中只选择清单所示的一条视频。');
-      }
-      await wait(s => {
-        if (s !== r) throw Error('发布表单已变化，请检查当前页面');
-        errors(s);
-        if (fileSelectionInvalidated) throw Error('检测到额外选文件或拖放，请清空上传区后重新选择');
-        if (!fileObservation) return null;
-        if (fileObservation.count !== 1 || fileObservation.name.toLowerCase() !== fileName(item.path).toLowerCase())
-          throw Error('所选文件数量或文件名与清单不符，请移除后重新选择');
-        return uploaded(s);
-      },'视频选择、上传完成与封面',signal,45*60*1000);
       const cover = one(r,UI.coverPreview,'当前视频封面');
-      if (verifiedCover && (verifiedCover.node !== cover || verifiedCover.source !== (cover.currentSrc || cover.getAttribute('src'))))
-        throw Error('视频封面与上次核验记录不同，请打开空白发表页后重新选择视频');
-      verifiedCover = {node:cover,source:cover.currentSrc || cover.getAttribute('src')};
-      status('视频上传完成，正在填写文案与位置。');
+      if (!uploaded(r)) throw Error('请先在平台上传视频，并等待上传和封面生成完成');
+      if (continuing && verifiedCover && (verifiedCover.node !== cover || verifiedCover.source !== coverSource(cover)))
+        throw Error('当前视频与试跑时的视频不同，请核对视频后重新开始');
+      verifiedCover = {node:cover,source:coverSource(cover)};
+      status('已检测到上传完成的视频，正在填写描述、标题、位置和商品。');
       writeValue(one(r,UI.description,'视频描述'),item.description,signal);
       writeValue(one(r,UI.title,'短标题'),item.title,signal);
       await wait(s=>s === r && readValue(one(s,UI.description,'视频描述')) === item.description &&
         readValue(one(s,UI.title,'短标题')) === item.title,'文案回读',signal,2500);
-      await setLocation(r,signal);
+      await setLocation(r,item.location,signal);
       errors(r);
       await attachProduct(r,item,signal);
       verify(r,item);
       if (dry) { status('试跑通过。请核对平台表单，取消勾选试跑后点击开始发布可继续本条。'); return; }
       status('核验通过，正在发表。');
       await submit(r,item,key,signal);
-      fileObservation = null; verifiedCover = null; recoveryItem = null;
-      status('已提交 / 发表结果待列表核验。请返回发表页打开空白表单，再点击开始处理下一条。');
+      verifiedCover = null; recoveryItem = null;
+      status('已提交 / 发表结果待平台核验。准备下一条时，先在发表页上传下一条视频。');
     } catch (error) {
       const entry = key && receipts()[key];
+      if (!entry) { recoveryItem = null; verifiedCover = null; }
       status('已暂停：' + error.message + (entry ? '\n本条已有提交记录，请到视频管理列表核验。' : ''));
     } finally {
-      awaitingFile = false;
       run = null;
       working(false);
-      try { const r = root(); $('remove').disabled = !(recoveryItem && r && uploadError(r)); }
-      catch { $('remove').disabled = true; }
     }
   }
   $('start').onclick = start;
   $('stop').onclick = () => { run?.abort(); if (!run) status('已停止。'); };
-  $('copy').onclick = async () => {
-    try { if (recoveryItem) await navigator.clipboard.writeText(recoveryItem.item.path); }
-    catch { status('复制失败，可在面板选中文件路径后手动复制。'); }
-  };
-  $('remove').onclick = async () => {
-    if (run || recovering) return;
-    const r = root();
-    if (!r || !uploadError(r)) { status('页面没有可确认的失败上传。'); return; }
-    const controller = new AbortController();
-    run = controller;
-    recovering = true;
-    working(true);
-    try {
-      requireConfig(['removeFailedUpload','removeDialog','removeConfirm']);
-      click(one(r,UI.removeFailedUpload,'删除失败上传'),'删除失败上传',controller.signal);
-      const modal = await wait(s=>s && one(s,UI.removeDialog,'删除确认弹窗'),'删除确认弹窗',controller.signal,12000,true);
-      click(one(modal,UI.removeConfirm,'确认删除'),'确认删除',controller.signal);
-      await wait(s=>s && !uploadError(s) && !oneOrAny(s,UI.coverPreview) &&
-        !oneOrAny(s,UI.uploadProgress) && oneOrAny(s,UI.uploadButton),'失败项清除',controller.signal,12000,true);
-      fileObservation = null;
-      $('remove').disabled = true;
-      status('失败项已删除。点击开始发布后，重新选择原视频。');
-    } catch (error) { status('删除未核实：' + error.message + '。可在平台手动删除并确认，然后使用空白发表页重新开始。'); }
-    finally { run = null; recovering = false; working(false); }
-  };
   $('save').onclick = () => {
     if (run) return;
     try { const jobs = parseJobs(); GM_setValue(DRAFT,JSON.stringify(jobs)); status('已保存 ' + jobs.length + ' 条。返回发表页时会载入。'); }
@@ -665,8 +599,7 @@
     GM_deleteValue(DRAFT);
     rows = [emptyRow()]; editing = 0; renderEditor();
     $('batch').value = ''; $('current').textContent = '';
-    recoveryItem = null; fileObservation = null;
-    $('copy').disabled = true; $('remove').disabled = true;
+    recoveryItem = null; verifiedCover = null;
     status('清单已清空。提交去重记录仍可用于核验。');
   };
   $('load').onclick = () => { if (!run) $('import').click(); };

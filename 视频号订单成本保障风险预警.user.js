@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频号订单成本保障风险预警
 // @namespace    local.channels.cost-protection-risk
-// @version      0.1.0
+// @version      0.1.1
 // @description  扫描在投标准订单，估算成交出价订单的成本保障风险并由用户决定是否发起结束
 // @match        https://channels.weixin.qq.com/promote/*
 // @run-at       document-idle
@@ -179,10 +179,10 @@
       state.scanning = false; render();
     }
   }
-  async function startEndFlow(id) {
+  async function startPauseFlow(id) {
     const item = candidates().find(row => row.id === id);
     if (!item || !item.risk || state.scanning) return;
-    if (!confirm(`将定位订单 ${item.id}（${item.name}），并打开平台“结束订单”流程。脚本不会点击平台最终确认按钮。继续？`)) return;
+    if (!confirm(`将打开订单 ${item.id}（${item.name}）详情并点击“停止加热”。若平台未再弹确认框，此操作可能立即生效。继续？`)) return;
     if (!isList() || accountName() !== state.account) { state.error = '账户或页面已变化，请重新扫描'; render(); return; }
     try {
       const freshRows = await gotoPage(item.page);
@@ -190,32 +190,22 @@
       if (!fresh || fresh.status !== item.status || fresh.roi !== item.roi || fresh.spent !== item.spent || fresh.budget !== item.budget) {
         throw new Error('订单状态或指标已变化，请重新扫描并复核');
       }
-      const more = [...fresh.row.querySelectorAll('a')].find(anchor => clean(anchor.innerText) === '更多');
-      if (!more) throw new Error('找不到该订单的“更多”操作');
-      const wrapper = more.closest('.finder-ui-desktop-popover__wrp');
-      if (!wrapper) throw new Error('订单操作菜单结构已变化');
-      if (typeof PointerEvent === 'function') {
-        wrapper.dispatchEvent(new PointerEvent('pointerenter', { bubbles:true }));
-        wrapper.dispatchEvent(new PointerEvent('pointerover', { bubbles:true }));
+      const detailLink = [...fresh.row.querySelectorAll('a')].find(anchor => clean(anchor.innerText) === '查看详情');
+      if (!detailLink) throw new Error('找不到该订单的详情入口');
+      detailLink.click();
+      const detailDeadline = Date.now() + 15000;
+      while (Date.now() < detailDeadline) {
+        const detailId = new URL(location.href).searchParams.get('promotionId');
+        if (location.pathname.endsWith('/detail') && detailId === id && document.body.innerText.includes('停止加热')) break;
+        await new Promise(resolve => setTimeout(resolve, 150));
       }
-      wrapper.dispatchEvent(new MouseEvent('mouseenter', { bubbles:true }));
-      wrapper.dispatchEvent(new MouseEvent('mouseover', { bubbles:true }));
-      more.dispatchEvent(new MouseEvent('mouseenter', { bubbles:true }));
-      more.dispatchEvent(new MouseEvent('mouseover', { bubbles:true }));
-      const findEndAction = () => [...document.querySelectorAll('.finder-ui-desktop-popover__desc *')]
-        .filter(el => visible(el) && el.children.length === 0 && clean(el.innerText) === '结束订单');
-      let endActions = findEndAction();
-      if (!endActions.length) {
-        more.click();
-        const deadline = Date.now() + 5000;
-        while (!endActions.length && Date.now() < deadline) {
-          await new Promise(resolve => setTimeout(resolve, 100));
-          endActions = findEndAction();
-        }
-      }
-      if (endActions.length !== 1) throw new Error('未能唯一确认平台“结束订单”菜单项；请在平台手动处理');
-      endActions[0].click();
-      state.error = `已为 ${id} 打开平台结束订单确认流程；请核对弹窗信息，由你完成最终确认。`;
+      const detailId = new URL(location.href).searchParams.get('promotionId');
+      if (detailId !== id || !document.body.innerText.includes(item.name)) throw new Error('订单详情与候选订单不匹配，未触发停止加热');
+      if (!/订单加热中|加热中/.test(document.body.innerText)) throw new Error('订单已不在加热中，请重新扫描确认状态');
+      const stopLinks = [...document.querySelectorAll('a')].filter(anchor => visible(anchor) && clean(anchor.innerText) === '停止加热');
+      if (stopLinks.length !== 1) throw new Error('未能唯一确认详情页的“停止加热”入口');
+      stopLinks[0].click();
+      state.error = `已为 ${id} 触发“停止加热”入口。请核对平台弹窗；若页面未再确认且状态已变化，请以平台结果为准。`;
     } catch (error) { state.error = error.message; }
     render();
   }
@@ -227,9 +217,9 @@
       const metrics = est
         ? `直接成交 ROI ${row.roi} · 出价 ¥${row.bid} · 消耗 ¥${row.spent}/¥${row.budget} · 成交 ${row.count} · 当前成交成本约 ¥${est.currentCPA.toFixed(2)} · 预计消耗/预期消耗 ${(est.ratio * 100).toFixed(1)}%`
         : `直接成交 ROI ${row.roi ?? '未读到'} · 出价 ${esc(row.bidText)} · 消耗 ¥${row.spent ?? '未读到'}/¥${row.budget ?? '未读到'} · ${row.note}`;
-      return `<article class="item"><b>${esc(row.name || '未命名')} · ${esc(row.id)}</b><div class="meta">${esc(row.promoteType)} · 第 ${row.page} 页 · ${esc(row.status)}</div><div class="meta">${metrics}</div><div class="meta flag">${esc(row.note)}</div>${row.risk ? `<button class="btn danger" data-end="${esc(row.id)}">核对后打开结束流程</button>` : ''}</article>`;
+      return `<article class="item"><b>${esc(row.name || '未命名')} · ${esc(row.id)}</b><div class="meta">${esc(row.promoteType)} · 第 ${row.page} 页 · ${esc(row.status)}</div><div class="meta">${metrics}</div><div class="meta flag">${esc(row.note)}</div>${row.risk ? `<button class="btn danger" data-pause="${esc(row.id)}">核对后打开停止加热</button>` : ''}</article>`;
     }).join('') : '<div class="muted">当前没有符合 ROI 条件的在投订单。扫描后会保留 ROI 出价订单的“估算不足”记录。</div>';
-    shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${open ? 'none' : 'block'}">成本风险</button><section class="panel" style="display:${open ? 'flex' : 'none'}"><header class="head"><div><strong>视频号成本保障风险预警</strong><small>趋势估算，不代表平台确认赔付</small></div><button id="min" title="最小化">−</button></header><main class="body"><div class="section"><div><b>账户</b>：${esc(state.account || accountName() || '未识别')}</div><div class="row"><label>低于该直接成交 ROI 时检查</label><input id="minimum" inputmode="decimal" value="${esc(defaults.roiMinimum)}" ${state.scanning?'disabled':''}></div><div class="row"><button class="btn primary" id="scan" ${state.scanning?'disabled':''}>${state.scanning?`扫描第 ${state.page}/${state.totalPages} 页`:'扫描全部在投订单'}</button></div><div class="muted">估算适用于按元成交出价：用当前消耗/直接成交订单数估算成交成本，并假设后续表现不变。超成本线必须严格高于120%。直接成交订单数不等同平台确认的有效成交数。</div></div><div class="section"><b>结果</b><div class="status">已扫描 ${state.rows.length} 单 · 当前在投 ${activeCount} 单 · ROI 低于阈值 ${list.length} 单</div><div class="muted">预测比值超过120%才显示“核对后打开结束流程”。常见的300元消耗和2次有效成交门槛、支付方式、控成本加热及审核资格无法仅凭列表确认；ROI出价订单不套用成交出价公式。</div>${state.error ? `<div class="error">${esc(state.error)}</div>` : ''}<div class="list">${resultHtml}</div></div><div class="section muted">结束流程会再次核对订单编号和扫描时的状态、ROI、消耗、预算。脚本仅打开平台结束确认；最终结束由你在平台弹窗中完成。</div></main></section>`;
+    shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${open ? 'none' : 'block'}">成本风险</button><section class="panel" style="display:${open ? 'flex' : 'none'}"><header class="head"><div><strong>视频号成本保障风险预警</strong><small>趋势估算，不代表平台确认赔付</small></div><button id="min" title="最小化">−</button></header><main class="body"><div class="section"><div><b>账户</b>：${esc(state.account || accountName() || '未识别')}</div><div class="row"><label>低于该直接成交 ROI 时检查</label><input id="minimum" inputmode="decimal" value="${esc(defaults.roiMinimum)}" ${state.scanning?'disabled':''}></div><div class="row"><button class="btn primary" id="scan" ${state.scanning?'disabled':''}>${state.scanning?`扫描第 ${state.page}/${state.totalPages} 页`:'扫描全部在投订单'}</button></div><div class="muted">估算适用于按元成交出价：用当前消耗/直接成交订单数估算成交成本，并假设后续表现不变。超成本线必须严格高于120%。直接成交订单数不等同平台确认的有效成交数。</div></div><div class="section"><b>结果</b><div class="status">已扫描 ${state.rows.length} 单 · 当前在投 ${activeCount} 单 · ROI 低于阈值 ${list.length} 单</div><div class="muted">预测比值超过120%才显示“核对后打开停止加热”。常见的300元消耗和2次有效成交门槛、支付方式、控成本加热及审核资格无法仅凭列表确认；ROI出价订单不套用成交出价公式。</div>${state.error ? `<div class="error">${esc(state.error)}</div>` : ''}<div class="list">${resultHtml}</div></div><div class="section muted">触发前会重新核对订单编号、扫描时的状态和指标。脚本进入详情页并点击“停止加热”；是否最终停止以平台提示为准，请逐单确认。</div></main></section>`;
     shadow.querySelector('#launch')?.addEventListener('click', () => { open = true; render(); });
     shadow.querySelector('#min')?.addEventListener('click', () => { open = false; render(); });
     shadow.querySelector('#scan')?.addEventListener('click', () => {
@@ -239,7 +229,7 @@
       defaults.roiMinimum = String(parsed); GM_setValue(PREF_KEY, defaults);
       scan();
     });
-    shadow.querySelectorAll('[data-end]').forEach(button => button.addEventListener('click', () => startEndFlow(button.dataset.end)));
+    shadow.querySelectorAll('[data-pause]').forEach(button => button.addEventListener('click', () => startPauseFlow(button.dataset.pause)));
   }
 
   render();

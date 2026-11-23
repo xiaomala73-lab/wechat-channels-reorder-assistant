@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频号订单成本保障风险预警
 // @namespace    local.channels.cost-protection-risk
-// @version      0.1.1
+// @version      0.1.2
 // @description  扫描在投标准订单，估算成交出价订单的成本保障风险并由用户决定是否发起结束
 // @match        https://channels.weixin.qq.com/promote/*
 // @run-at       document-idle
@@ -18,7 +18,7 @@
 
   const PREF_KEY = ROOT + ':preferences:v1';
   const defaults = Object.assign({ roiMinimum: '1.0' }, GM_getValue(PREF_KEY, {}) || {});
-  const state = { scanning: false, page: 0, totalPages: 0, account: '', rows: [], error: '' };
+  const state = { scanning: false, complete: false, page: 0, totalPages: 0, account: '', rows: [], error: '' };
   const host = document.createElement('div');
   host.id = ROOT;
   host.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none';
@@ -100,7 +100,8 @@
     input.dispatchEvent(new Event('input', { bubbles:true }));
     input.dispatchEvent(new Event('change', { bubbles:true }));
   }
-  async function waitForPage(page) {
+  function rowsSignature(rows = readRows()) { return rows.map(row => row.id + ':' + row.spent).join('|'); }
+  async function waitForPage(page, previousSignature = '') {
     const deadline = Date.now() + 15000;
     let last = '';
     let stable = 0;
@@ -108,8 +109,8 @@
       if (!isList()) throw new Error('扫描期间已离开标准订单列表');
       if (pageNumber() === page) {
         const rows = readRows();
-        const sig = rows.map(row => row.id + ':' + row.spent).join('|');
-        if (sig && sig === last) { if (!stable) stable = Date.now(); if (Date.now() - stable >= 350) return rows; }
+        const sig = rowsSignature(rows);
+        if (sig && sig !== previousSignature && sig === last) { if (!stable) stable = Date.now(); if (Date.now() - stable >= 350) return rows; }
         else { last = sig; stable = 0; }
       }
       await new Promise(resolve => setTimeout(resolve, 150));
@@ -118,13 +119,72 @@
   }
   async function gotoPage(target) {
     if (pageNumber() === target) return waitForPage(target);
+    const previousSignature = rowsSignature();
     const pager = document.querySelector('.finder-ui-desktop-pagination');
     const input = pager?.querySelector('input.finder-ui-desktop-pagination__input');
     const jump = [...(pager?.querySelectorAll('a,button') || [])].find(el => clean(el.innerText) === '跳转');
     if (!input || !jump) throw new Error('找不到平台订单分页跳转控件');
     setInput(input, target);
     jump.click();
-    return waitForPage(target);
+    return waitForPage(target, previousSignature);
+  }
+  function statusFilter() {
+    const field = document.querySelector('.finder-card .finder-ui-desktop-form__dropdowncascade-label');
+    if (!field) throw new Error('找不到平台订单状态筛选器');
+    return field;
+  }
+  function selectedStatuses(field = statusFilter()) {
+    const summary = clean(field.querySelector('dt')?.innerText);
+    if (!summary || summary === '选择订单状态') return [];
+    return [...field.querySelectorAll('li')]
+      .map(li => clean(li.querySelector('[title]')?.getAttribute('title') || li.innerText))
+      .filter(label => summary.includes(label));
+  }
+  async function setStatusFilters(statuses) {
+    const field = statusFilter();
+    field.querySelector('dt')?.click();
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline && getComputedStyle(field.querySelector('.finder-ui-desktop-dropdown-menu'))?.display === 'none') {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    const desired = new Set(statuses);
+    for (const li of field.querySelectorAll('li')) {
+      const label = clean(li.querySelector('[title]')?.getAttribute('title') || li.innerText);
+      const currentlySelected = selectedStatuses(field).includes(label);
+      if (currentlySelected !== desired.has(label)) {
+        li.querySelector('.finder-ui-desktop-dropdown__list-ele-contain')?.click();
+        const changeDeadline = Date.now() + 1000;
+        while (Date.now() < changeDeadline && selectedStatuses(field).includes(label) !== desired.has(label)) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+      }
+    }
+    const actual = selectedStatuses(field);
+    if (actual.length !== desired.size || actual.some(label => !desired.has(label))) {
+      throw new Error('无法确认平台订单状态筛选已设置');
+    }
+  }
+  async function applyStatusFilter() {
+    const beforeTotal = clean(document.body.innerText.match(/订单总数（[^）]+）/)?.[0]);
+    const beforeSignature = rowsSignature();
+    const button = [...document.querySelectorAll('.finder-card button')].find(el => clean(el.innerText) === '筛选');
+    if (!button) throw new Error('找不到平台“筛选”按钮');
+    button.click();
+    const deadline = Date.now() + 15000;
+    let last = '';
+    let stable = 0;
+    while (Date.now() < deadline) {
+      if (!isList()) throw new Error('筛选期间已离开标准订单列表');
+      const rows = readRows();
+      const signature = rowsSignature(rows);
+      const total = clean(document.body.innerText.match(/订单总数（[^）]+）/)?.[0]);
+      if ((total && total !== beforeTotal) || (signature && signature !== beforeSignature)) {
+        if (signature === last) { if (!stable) stable = Date.now(); if (Date.now() - stable > 400) return; }
+        else { last = signature; stable = 0; }
+      }
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+    throw new Error('等待平台应用“加热中”筛选超时，未开始扫描');
   }
   function assess(row, minimumRoi) {
     const active = /加热中|投放中/.test(row.status) && !/已结束|已取消|审核未通过/.test(row.status);
@@ -156,14 +216,21 @@
   async function scan() {
     if (state.scanning) return;
     if (!isList()) { state.error = '请先进入视频号加热平台 → 订单管理 → 标准订单'; render(); return; }
-    state.scanning = true; state.error = ''; state.rows = []; state.page = 0;
+    state.scanning = true; state.complete = false; state.error = ''; state.rows = []; state.page = 0;
     const account = accountName();
     if (!account) { state.scanning = false; state.error = '未读到账户名称，请确认平台页面已加载'; render(); return; }
     state.account = account;
     const startPage = pageNumber();
+    let originalStatuses = [];
+    let filterChanged = false;
     try {
+      originalStatuses = selectedStatuses();
+      filterChanged = true;
+      await setStatusFilters(['加热中']);
+      await applyStatusFilter();
+      await new Promise(resolve => setTimeout(resolve, 300));
       const pages = maxPage();
-      if (pages > 200) throw new Error('订单页数超过200，请先用平台筛选缩小范围');
+      if (pages > 20) throw new Error('“加热中”筛选后页数仍超过20，已停止扫描以避免读取历史订单');
       state.totalPages = pages;
       const found = new Map();
       for (let page = 1; page <= pages; page++) {
@@ -173,9 +240,21 @@
         state.rows = [...found.values()]; state.page = page; render();
       }
       state.rows = [...found.values()];
+      state.complete = true;
     } catch (error) { state.error = error.message; }
     finally {
-      if (isList() && accountName() === account && pageNumber() !== startPage) await gotoPage(startPage).catch(() => {});
+      if (isList() && accountName() === account && filterChanged) {
+        try {
+          await setStatusFilters(originalStatuses);
+          await applyStatusFilter();
+          const restoredPage = Math.min(startPage, maxPage());
+          if (pageNumber() !== restoredPage) await gotoPage(restoredPage);
+        } catch (restoreError) {
+          state.error = (state.error ? state.error + '；' : '') + '恢复原筛选或页码失败：' + restoreError.message;
+        }
+      } else if (isList() && accountName() === account && pageNumber() !== startPage) {
+        await gotoPage(startPage).catch(() => {});
+      }
       state.scanning = false; render();
     }
   }
@@ -219,7 +298,7 @@
         : `直接成交 ROI ${row.roi ?? '未读到'} · 出价 ${esc(row.bidText)} · 消耗 ¥${row.spent ?? '未读到'}/¥${row.budget ?? '未读到'} · ${row.note}`;
       return `<article class="item"><b>${esc(row.name || '未命名')} · ${esc(row.id)}</b><div class="meta">${esc(row.promoteType)} · 第 ${row.page} 页 · ${esc(row.status)}</div><div class="meta">${metrics}</div><div class="meta flag">${esc(row.note)}</div>${row.risk ? `<button class="btn danger" data-pause="${esc(row.id)}">核对后打开停止加热</button>` : ''}</article>`;
     }).join('') : '<div class="muted">当前没有符合 ROI 条件的在投订单。扫描后会保留 ROI 出价订单的“估算不足”记录。</div>';
-    shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${open ? 'none' : 'block'}">成本风险</button><section class="panel" style="display:${open ? 'flex' : 'none'}"><header class="head"><div><strong>视频号成本保障风险预警</strong><small>趋势估算，不代表平台确认赔付</small></div><button id="min" title="最小化">−</button></header><main class="body"><div class="section"><div><b>账户</b>：${esc(state.account || accountName() || '未识别')}</div><div class="row"><label>低于该直接成交 ROI 时检查</label><input id="minimum" inputmode="decimal" value="${esc(defaults.roiMinimum)}" ${state.scanning?'disabled':''}></div><div class="row"><button class="btn primary" id="scan" ${state.scanning?'disabled':''}>${state.scanning?`扫描第 ${state.page}/${state.totalPages} 页`:'扫描全部在投订单'}</button></div><div class="muted">估算适用于按元成交出价：用当前消耗/直接成交订单数估算成交成本，并假设后续表现不变。超成本线必须严格高于120%。直接成交订单数不等同平台确认的有效成交数。</div></div><div class="section"><b>结果</b><div class="status">已扫描 ${state.rows.length} 单 · 当前在投 ${activeCount} 单 · ROI 低于阈值 ${list.length} 单</div><div class="muted">预测比值超过120%才显示“核对后打开停止加热”。常见的300元消耗和2次有效成交门槛、支付方式、控成本加热及审核资格无法仅凭列表确认；ROI出价订单不套用成交出价公式。</div>${state.error ? `<div class="error">${esc(state.error)}</div>` : ''}<div class="list">${resultHtml}</div></div><div class="section muted">触发前会重新核对订单编号、扫描时的状态和指标。脚本进入详情页并点击“停止加热”；是否最终停止以平台提示为准，请逐单确认。</div></main></section>`;
+    shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${open ? 'none' : 'block'}">成本风险</button><section class="panel" style="display:${open ? 'flex' : 'none'}"><header class="head"><div><strong>视频号成本保障风险预警</strong><small>趋势估算，不代表平台确认赔付</small></div><button id="min" title="最小化">−</button></header><main class="body"><div class="section"><div><b>账户</b>：${esc(state.account || accountName() || '未识别')}</div><div class="row"><label>低于该直接成交 ROI 时检查</label><input id="minimum" inputmode="decimal" value="${esc(defaults.roiMinimum)}" ${state.scanning?'disabled':''}></div><div class="row"><button class="btn primary" id="scan" ${state.scanning?'disabled':''}>${state.scanning?`扫描第 ${state.page}/${state.totalPages} 页`:'扫描加热中的订单'}</button></div><div class="muted">仅临时筛选平台状态为“加热中”的订单并扫描其分页，结束后恢复原筛选和页码。估算适用于按元成交出价：用当前消耗/直接成交订单数估算成交成本，并假设后续表现不变。超成本线必须严格高于120%。</div></div><div class="section"><b>结果</b><div class="status">${state.scanning ? `扫描中：第 ${state.page}/${state.totalPages || '…'} 页 · 已读取 ${state.rows.length} 单（以下为临时结果）` : state.complete ? `扫描完成：读取 ${state.rows.length} 单 · 在投 ${activeCount} 单 · ROI 低于阈值 ${list.length} 单` : '尚未完成扫描'}</div><div class="muted">预测比值超过120%才显示“核对后打开停止加热”。常见的300元消耗和2次有效成交门槛、支付方式、控成本加热及审核资格无法仅凭列表确认；ROI出价订单不套用成交出价公式。</div>${state.error ? `<div class="error">${esc(state.error)}</div>` : ''}<div class="list">${resultHtml}</div></div><div class="section muted">触发前会重新核对订单编号、扫描时的状态和指标。脚本进入详情页并点击“停止加热”；是否最终停止以平台提示为准，请逐单确认。</div></main></section>`;
     shadow.querySelector('#launch')?.addEventListener('click', () => { open = true; render(); });
     shadow.querySelector('#min')?.addEventListener('click', () => { open = false; render(); });
     shadow.querySelector('#scan')?.addEventListener('click', () => {

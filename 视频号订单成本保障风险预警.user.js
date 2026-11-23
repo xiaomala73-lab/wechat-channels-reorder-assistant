@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         视频号订单成本保障风险预警
 // @namespace    local.channels.cost-protection-risk
-// @version      0.1.5
-// @description  扫描在投标准订单，估算成交出价订单的成本保障风险并由用户决定是否发起结束
+// @version      0.1.6
+// @description  按ROI范围扫描在投标准订单，估算成本保障风险并由用户决定是否停止加热
 // @match        https://channels.weixin.qq.com/promote/*
 // @run-at       document-idle
 // @noframes
@@ -17,8 +17,13 @@
   if (window.top !== window.self || document.getElementById(ROOT)) return;
 
   const PREF_KEY = ROOT + ':preferences:v1';
-  const defaults = Object.assign({ roiMinimum: '1.0', panelPosition: null }, GM_getValue(PREF_KEY, {}) || {});
-  const state = { scanning: false, complete: false, page: 0, totalPages: 0, account: '', rows: [], error: '' };
+  const savedPreferences = GM_getValue(PREF_KEY, {}) || {};
+  const defaults = Object.assign({ roiMinimum: '', roiMaximum: '', panelPosition: null }, savedPreferences);
+  if (!Object.prototype.hasOwnProperty.call(savedPreferences, 'roiMaximum') && savedPreferences.roiMinimum != null) {
+    defaults.roiMaximum = String(savedPreferences.roiMinimum);
+    defaults.roiMinimum = '';
+  }
+  const state = { scanning: false, stopping: false, stopProgress: '', complete: false, page: 0, totalPages: 0, account: '', rows: [], error: '' };
   const host = document.createElement('div');
   host.id = ROOT;
   host.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none';
@@ -33,7 +38,7 @@
     .head{flex:none;display:flex;align-items:center;justify-content:space-between;padding:13px 15px;background:white;border-bottom:1px solid #e4eaf2;cursor:move;touch-action:none;user-select:none}.head strong{font-size:15px}.head small{display:block;color:#738196;font-size:11px}.head button{width:30px;height:30px;border:0;border-radius:50%;background:#eef2f7;color:#5a6473;font-size:19px;cursor:pointer}
     .body{min-height:0;overflow:auto;padding:13px}.card{padding:12px;margin-bottom:11px;border:1px solid #e1e8f1;border-radius:12px;background:white}.title{font-weight:700;margin-bottom:7px}.muted{color:#697789;font-size:11px}.hint{color:#697789;font-size:11px;margin-top:7px}.status{padding:9px 10px;background:#eaf3ff;color:#135fae;border-radius:9px;font-weight:700;overflow-wrap:anywhere}
     input{width:100%;padding:8px 9px;border:1px solid #ccd8e8;border-radius:8px;outline:0;background:white;color:#1e293b}input:focus{border-color:#087bff;box-shadow:0 0 0 3px #087bff18}
-    .row{display:flex;gap:8px;align-items:center;margin-top:9px}.row label{flex:1;min-width:0}.row input{width:96px;flex:none}.btn{border:1px solid #c9dcf7;border-radius:9px;background:white;color:#0765d5;padding:8px 10px;font-weight:700}.btn.primary{width:100%;background:#087bff;border-color:#087bff;color:white}.btn.danger{color:#c7423d;border-color:#ffd2ce;background:#fff;white-space:nowrap}
+    .row{display:flex;gap:8px;align-items:center;margin-top:9px}.row label{flex:1;min-width:0}.row input{width:96px;flex:none}.rangeRow{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:9px}.rangeField{min-width:0}.rangeField label{display:block;margin-bottom:4px;color:#536273;font-size:11px}.rangeField input{width:100%}.btn{border:1px solid #c9dcf7;border-radius:9px;background:white;color:#0765d5;padding:8px 10px;font-weight:700}.btn.primary{width:100%;background:#087bff;border-color:#087bff;color:white}.btn.danger{color:#c7423d;border-color:#ffd2ce;background:#fff;white-space:nowrap}.btn.batch{width:100%;margin-top:8px}
     .progress{height:6px;margin-top:9px;overflow:hidden;border-radius:8px;background:#eaf0f7}.progress span{display:block;height:100%;border-radius:inherit;background:#087bff;transition:width .2s}.progress.indeterminate span{width:35%;animation:slide 1.1s ease-in-out infinite alternate}@keyframes slide{from{transform:translateX(0)}to{transform:translateX(185%)}}
     .stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:9px}.stat{min-width:0;padding:8px;background:#f4f7fb;border-radius:8px}.stat b{display:block;font-size:16px;color:#1e293b}.stat span{display:block;color:#697789;font-size:10px;overflow-wrap:anywhere}
     .list{display:grid;gap:8px;margin-top:9px}.item{padding:10px;border:1px solid #e6ecf3;border-radius:10px;background:#fff}.itemTop{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.item b{min-width:0;overflow-wrap:anywhere}.badge{flex:none;padding:2px 7px;border-radius:99px;background:#fff1e8;color:#a44915;font-size:10px;font-weight:700}.item .meta{margin-top:5px;color:#536273;font-size:11px;overflow-wrap:anywhere}.item .flag{color:#a44915;font-weight:700}.itemActions{display:flex;justify-content:flex-end;margin-top:8px}.error{margin-top:8px;padding:8px 9px;border-radius:8px;background:#fff1f0;color:#a12622;font-weight:700;overflow-wrap:anywhere}
@@ -254,10 +259,12 @@
       ? '平台筛选后仍读到非在投订单，已停止扫描，结果未完成'
       : '平台订单总数未因“加热中”筛选减少，已停止扫描，未把当前页当作完整结果');
   }
-  function assess(row, minimumRoi) {
+  function assess(row) {
     const active = /加热中|投放中/.test(row.status) && !/已结束|已取消|审核未通过/.test(row.status);
-    const lowRoi = Number.isFinite(row.roi) && row.roi < minimumRoi;
-    if (!active || !lowRoi) return null;
+    const minimumRoi = defaults.roiMinimum === '' ? null : Number(defaults.roiMinimum);
+    const maximumRoi = defaults.roiMaximum === '' ? null : Number(defaults.roiMaximum);
+    const matchesRoi = Number.isFinite(row.roi) && (minimumRoi === null || row.roi >= minimumRoi) && (maximumRoi === null || row.roi <= maximumRoi);
+    if (!active || !matchesRoi) return null;
     if (!row.bidIsCost || !(row.bid > 0)) return { ...row, estimate: null, risk: false, note: 'ROI 出价目标：赔付预期消耗口径未知，无法可靠估算' };
     if (!(row.spent > 0) || !(row.count > 0)) return { ...row, estimate: null, risk: false, note: '当前无有效样本，无法按成交成本外推' };
     const currentCPA = row.spent / row.count;
@@ -277,9 +284,21 @@
   }
   function allActiveRows() { return state.rows.filter(row => /加热中|投放中/.test(row.status) && !/已结束|已取消|审核未通过/.test(row.status)); }
   function candidates() {
-    const threshold = Number(defaults.roiMinimum);
-    if (!Number.isFinite(threshold) || threshold < 0) return [];
-    return allActiveRows().map(row => assess(row, threshold)).filter(Boolean);
+    const minimumRoi = defaults.roiMinimum === '' ? null : Number(defaults.roiMinimum);
+    const maximumRoi = defaults.roiMaximum === '' ? null : Number(defaults.roiMaximum);
+    if ((minimumRoi !== null && (!Number.isFinite(minimumRoi) || minimumRoi < 0)) ||
+        (maximumRoi !== null && (!Number.isFinite(maximumRoi) || maximumRoi < 0)) ||
+        (minimumRoi === null && maximumRoi === null) ||
+        (minimumRoi !== null && maximumRoi !== null && minimumRoi > maximumRoi)) return [];
+    return allActiveRows().map(row => assess(row)).filter(Boolean);
+  }
+  function groupedCandidates() {
+    const matches = candidates();
+    return {
+      below: matches.filter(row => row.estimate && !row.risk),
+      above: matches.filter(row => row.estimate && row.risk),
+      unknown: matches.filter(row => !row.estimate || !Number.isFinite(row.estimate.ratio))
+    };
   }
   async function scan() {
     if (state.scanning) return;
@@ -329,11 +348,11 @@
       state.scanning = false; render();
     }
   }
-  async function startPauseFlow(id) {
+  async function startPauseFlow(id, options = {}) {
     const item = candidates().find(row => row.id === id);
-    if (!item || !item.risk || state.scanning) return;
-    if (!confirm(`将打开订单 ${item.id}（${item.name}）详情并点击“停止加热”。若平台未再弹确认框，此操作可能立即生效。继续？`)) return;
-    if (!isList() || accountName() !== state.account) { state.error = '账户或页面已变化，请重新扫描'; render(); return; }
+    if (!item || state.scanning || (state.stopping && !options.fromBatch)) return false;
+    if (!options.confirmed && !confirm(`将打开订单 ${item.id}（${item.name}）详情并点击“停止加热”。若平台未再弹确认框，此操作可能立即生效。继续？`)) return false;
+    if (!isList() || accountName() !== state.account) { state.error = '账户或页面已变化，请重新扫描'; render(); return false; }
     try {
       const freshRows = await gotoPage(item.page);
       const fresh = freshRows.find(row => row.id === id);
@@ -355,37 +374,87 @@
       const stopLinks = [...document.querySelectorAll('a')].filter(anchor => visible(anchor) && clean(anchor.innerText) === '停止加热');
       if (stopLinks.length !== 1) throw new Error('未能唯一确认详情页的“停止加热”入口');
       stopLinks[0].click();
-      state.error = `已为 ${id} 触发“停止加热”入口。请核对平台弹窗；若页面未再确认且状态已变化，请以平台结果为准。`;
-    } catch (error) { state.error = error.message; }
+      if (options.returnToList) {
+        const modal = [...document.querySelectorAll('[role="dialog"],[class*="dialog"]')]
+          .find(el => visible(el) && /停止|确认|确定/.test(clean(el.innerText)));
+        if (modal) throw new Error('平台出现确认窗口，批量流程已停在当前订单；请先人工核对并处理平台窗口');
+        history.back();
+        const returnDeadline = Date.now() + 15000;
+        while (Date.now() < returnDeadline && !isList()) await new Promise(resolve => setTimeout(resolve, 150));
+        if (!isList()) throw new Error('触发停止加热后未返回订单列表，批量流程已暂停');
+      } else {
+        state.error = `已为 ${id} 触发“停止加热”入口。请核对平台弹窗；若页面未再确认且状态已变化，请以平台结果为准。`;
+      }
+      return true;
+    } catch (error) { state.error = error.message; render(); return false; }
     render();
+    return true;
+  }
+  async function bulkStop(groupKey) {
+    if (!state.complete || state.scanning || state.stopping || !isList() || accountName() !== state.account) {
+      state.error = '请在订单列表完成扫描后再批量停止'; render(); return;
+    }
+    const groups = groupedCandidates();
+    const rows = groups[groupKey] || [];
+    if (!rows.length) return;
+    const label = groupKey === 'above' ? '超过赔付线' : '未超过赔付线';
+    const ids = rows.map(row => row.id).join('、');
+    if (!confirm(`即将对“${label}”的 ${rows.length} 笔订单逐单触发“停止加热”：\n${ids}\n\n每笔会重新核对状态和指标；若平台弹出确认窗口或页面无法返回列表，批量流程会暂停。停止操作可能立即生效，继续吗？`)) return;
+    state.stopping = true; state.error = '';
+    try {
+      for (let index = 0; index < rows.length; index++) {
+        const row = rows[index];
+        state.stopProgress = `${label}：正在处理 ${index + 1}/${rows.length} · ${row.id}`;
+        render();
+        const ok = await startPauseFlow(row.id, { confirmed: true, fromBatch: true, returnToList: true });
+        if (!ok) throw new Error(state.error || `订单 ${row.id} 未完成，批量操作已暂停`);
+        const freshRows = await gotoPage(row.page);
+        const stillActive = freshRows.find(item => item.id === row.id);
+        if (stillActive && /加热中|投放中/.test(stillActive.status)) {
+          throw new Error(`订单 ${row.id} 仍显示在投，批量操作已暂停，请核对平台结果`);
+        }
+      }
+      state.error = `${label} ${rows.length} 笔订单均已触发停止加热；请以平台最终状态为准。`;
+    } catch (error) {
+      state.error = error.message;
+    } finally {
+      state.stopping = false; state.stopProgress = ''; render();
+    }
   }
   function render() {
     const list = candidates();
+    const groups = groupedCandidates();
     const activeCount = allActiveRows().length;
     const progressPercent = state.totalPages ? Math.min(100, Math.round(state.page / state.totalPages * 100)) : 0;
-    const resultHtml = list.length ? list.map(row => {
+    const renderItems = (rows, showRiskBadge) => rows.length ? rows.map(row => {
       const est = row.estimate;
       const metrics = est
-        ? `直接成交 ROI ${row.roi} · 出价 ¥${row.bid} · 消耗 ¥${row.spent}/¥${row.budget} · 成交 ${row.count}<br>当前成交成本 ¥${est.currentCPA.toFixed(2)} · 预计消耗/预期消耗 ${(est.ratio * 100).toFixed(1)}%`
+        ? `直接成交 ROI ${row.roi} · 出价 ¥${row.bid} · 消耗 ¥${row.spent}/¥${row.budget} · 成交 ${row.count}<br>当前成交成本 ¥${est.currentCPA.toFixed(2)} · 预计消耗/预期消耗 ${Number.isFinite(est.ratio) ? (est.ratio * 100).toFixed(1) + '%' : '无法计算'}`
         : `直接成交 ROI ${row.roi ?? '未读到'} · 出价 ${esc(row.bidText)} · 消耗 ¥${row.spent ?? '未读到'}/¥${row.budget ?? '未读到'} · ${row.note}`;
-      return `<article class="item"><div class="itemTop"><b>${esc(row.name || '未命名')} · ${esc(row.id)}</b>${row.risk ? '<span class="badge">趋势风险</span>' : ''}</div><div class="meta">${esc(row.promoteType)} · 第 ${row.page} 页 · ${esc(row.status)}</div><div class="meta">${metrics}</div><div class="meta flag">${esc(row.note)}</div>${row.risk ? `<div class="itemActions"><button class="btn danger" data-pause="${esc(row.id)}">核对后停止加热</button></div>` : ''}</article>`;
-    }).join('') : '<div class="muted">当前没有符合 ROI 条件的在投订单。扫描后会保留 ROI 出价订单的“估算不足”记录。</div>';
+      return `<article class="item"><div class="itemTop"><b>${esc(row.name || '未命名')} · ${esc(row.id)}</b>${showRiskBadge ? `<span class="badge">${row.risk ? '超过赔付线' : '未超过赔付线'}</span>` : '<span class="badge">待核实</span>'}</div><div class="meta">${esc(row.promoteType)} · 第 ${row.page} 页 · ${esc(row.status)}</div><div class="meta">${metrics}</div><div class="meta flag">${esc(row.note)}</div><div class="itemActions"><button class="btn danger" data-pause="${esc(row.id)}" ${state.stopping?'disabled':''}>停止加热</button></div></article>`;
+    }).join('') : '<div class="muted">此分组暂无订单。</div>';
+    const groupCard = (title, key, rows) => `<section class="card"><div class="title">${title} · ${rows.length} 笔</div><button class="btn danger batch" data-bulk="${key}" ${!state.complete || state.stopping || !rows.length ? 'disabled' : ''}>一键停止本组 ${rows.length} 笔</button><div class="list">${renderItems(rows, true)}</div></section>`;
     const progressLabel = state.scanning
       ? state.page ? `正在扫描第 ${state.page}/${state.totalPages} 页 · 已读取 ${state.rows.length} 笔` : '正在应用“加热中”筛选…'
       : state.complete ? `扫描完成 · 共读取 ${state.rows.length} 笔在投订单` : '尚未完成扫描';
     const position = currentPosition();
-    shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${open ? 'none' : 'block'}">成本风险</button><section class="panel" style="left:${position.left}px;top:${position.top}px;display:${open ? 'flex' : 'none'}"><header class="head"><div><strong>视频号成本保障风险预警</strong><small>趋势估算 · 不代表平台确认赔付</small></div><button id="min" title="最小化">−</button></header><main class="body"><section class="card"><div class="title">账户与扫描</div><div class="muted">${esc(state.account || accountName() || '尚未识别账户')}</div><div class="row"><label for="minimum">直接成交 ROI 低于</label><input id="minimum" inputmode="decimal" value="${esc(defaults.roiMinimum)}" ${state.scanning?'disabled':''}></div><div class="row"><button class="btn primary" id="scan" ${state.scanning?'disabled':''}>${state.scanning?'正在扫描…':'扫描加热中的订单'}</button></div><div class="status" style="margin-top:9px">${progressLabel}</div>${state.scanning ? `<div class="progress ${state.page ? '' : 'indeterminate'}"><span style="width:${state.page ? progressPercent : 35}%"></span></div>` : ''}<div class="hint">临时筛选“加热中”并扫描全部分页，结束后恢复原筛选与页码。趋势按当前成交成本外推，超过严格 120% 线才标记风险。</div></section><section class="card"><div class="title">扫描结果</div>${state.complete ? `<div class="stats"><div class="stat"><b>${state.rows.length}</b><span>读取订单</span></div><div class="stat"><b>${activeCount}</b><span>在投订单</span></div><div class="stat"><b>${list.length}</b><span>低 ROI 关注</span></div></div>` : ''}<div class="muted" style="margin-top:8px">只有预测比例超过 120% 且 ROI 低于阈值才显示风险操作。平台有效成交、支付方式及其他赔付资格仍需人工核实；ROI 出价订单的预期消耗口径未知。</div>${state.error ? `<div class="error">${esc(state.error)}</div>` : ''}<div class="list">${resultHtml}</div></section><section class="card"><div class="title">操作说明</div><div class="muted">停止前会重新核对订单编号、状态和指标。脚本只打开平台“停止加热”入口；请核对平台提示并逐单确认。</div></section></main></section>`;
+    shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${open ? 'none' : 'block'}">成本风险</button><section class="panel" style="left:${position.left}px;top:${position.top}px;display:${open ? 'flex' : 'none'}"><header class="head"><div><strong>视频号成本保障风险预警</strong><small>趋势估算 · 不代表平台确认赔付</small></div><button id="min" title="最小化">−</button></header><main class="body"><section class="card"><div class="title">账户与扫描</div><div class="muted">${esc(state.account || accountName() || '尚未识别账户')}</div><div class="rangeRow"><div class="rangeField"><label for="minimum">ROI ≥</label><input id="minimum" inputmode="decimal" placeholder="不限" value="${esc(defaults.roiMinimum)}" ${state.scanning || state.stopping?'disabled':''}></div><div class="rangeField"><label for="maximum">ROI ≤</label><input id="maximum" inputmode="decimal" placeholder="不限" value="${esc(defaults.roiMaximum)}" ${state.scanning || state.stopping?'disabled':''}></div></div><div class="hint">填写上下限可筛选区间；只填“ROI ≤”即可按低 ROI 筛选。</div><div class="row"><button class="btn primary" id="scan" ${state.scanning || state.stopping?'disabled':''}>${state.scanning?'正在扫描…':'扫描加热中的订单'}</button></div><div class="status" style="margin-top:9px">${state.stopping ? esc(state.stopProgress) : progressLabel}</div>${state.scanning ? `<div class="progress ${state.page ? '' : 'indeterminate'}"><span style="width:${state.page ? progressPercent : 35}%"></span></div>` : ''}<div class="hint">临时筛选“加热中”并扫描全部分页，结束后恢复原筛选与页码。预测比例严格超过 120% 归为超过赔付线。</div></section>${state.complete ? `<section class="card"><div class="title">扫描汇总</div><div class="stats"><div class="stat"><b>${state.rows.length}</b><span>读取订单</span></div><div class="stat"><b>${activeCount}</b><span>在投订单</span></div><div class="stat"><b>${list.length}</b><span>ROI 条件命中</span></div></div></section>${groupCard('未超过赔付线', 'below', groups.below)}${groupCard('超过赔付线', 'above', groups.above)}<section class="card"><div class="title">暂无法判断 · ${groups.unknown.length} 笔</div><div class="hint">ROI 出价或缺少成交样本，无法可靠估算赔付线；不会误归入未超过线。</div><div class="list">${renderItems(groups.unknown, false)}</div></section>` : `<section class="card"><div class="title">扫描结果</div><div class="muted">扫描完成后按 ROI 条件和预测赔付线分组显示订单。</div></section>`}${state.error ? `<div class="error">${esc(state.error)}</div>` : ''}<section class="card"><div class="title">判定与操作</div><div class="muted">趋势估算使用当前成交成本外推。平台有效成交、支付方式及其他赔付资格仍需人工核实。停止前逐单复核编号、状态和指标；批量操作出现平台确认窗口时会暂停。</div></section></main></section>`;
     bindPanelDrag();
     shadow.querySelector('#launch')?.addEventListener('click', () => { open = true; render(); });
     shadow.querySelector('#min')?.addEventListener('click', () => { open = false; render(); });
     shadow.querySelector('#scan')?.addEventListener('click', () => {
-      const value = shadow.querySelector('#minimum')?.value.trim();
-      const parsed = Number(value);
-      if (!Number.isFinite(parsed) || parsed < 0) { state.error = 'ROI阈值须为0或正数'; render(); return; }
-      defaults.roiMinimum = String(parsed); GM_setValue(PREF_KEY, defaults);
+      const minText = shadow.querySelector('#minimum')?.value.trim() || '';
+      const maxText = shadow.querySelector('#maximum')?.value.trim() || '';
+      const min = minText === '' ? null : Number(minText);
+      const max = maxText === '' ? null : Number(maxText);
+      if (min === null && max === null) { state.error = '请至少填写 ROI 下限或上限'; render(); return; }
+      if ((min !== null && (!Number.isFinite(min) || min < 0)) || (max !== null && (!Number.isFinite(max) || max < 0))) { state.error = 'ROI 上下限须为0或正数'; render(); return; }
+      if (min !== null && max !== null && min > max) { state.error = 'ROI 下限不能大于上限'; render(); return; }
+      defaults.roiMinimum = minText; defaults.roiMaximum = maxText; GM_setValue(PREF_KEY, defaults);
       scan();
     });
     shadow.querySelectorAll('[data-pause]').forEach(button => button.addEventListener('click', () => startPauseFlow(button.dataset.pause)));
+    shadow.querySelectorAll('[data-bulk]').forEach(button => button.addEventListener('click', () => bulkStop(button.dataset.bulk)));
   }
 
   render();

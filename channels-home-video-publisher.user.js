@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频号主页带货发布助手
 // @namespace    local.channels.home-video-publisher
-// @version      1.1.7
+// @version      1.1.8
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js
 // @match        https://channels.weixin.qq.com/platform/post/create*
@@ -50,6 +50,7 @@
   const RECEIPTS = 'publisher.receipts.v1';
   const lockName = 'channels-home-video-publisher';
   let run = null;
+  let attachedProof = null;
   const host = document.createElement('aside');
   host.id = 'channels-home-video-publisher-panel';
   if (document.getElementById(host.id)) return;
@@ -78,7 +79,7 @@
   </style>
   <button id="launch">发布助手</button>
   <section id="window" aria-label="主页带货发布助手" hidden>
-    <header class="head"><div><strong>主页带货发布助手</strong><small>v1.1.7 · 使用已上传视频</small></div><button id="min" title="收起面板" aria-label="收起面板">−</button></header>
+    <header class="head"><div><strong>主页带货发布助手</strong><small>v1.1.8 · 使用已上传视频</small></div><button id="min" title="收起面板" aria-label="收起面板">−</button></header>
     <div class="body">
       <div class="card"><h2>视频清单</h2>
         <fieldset id="editor">
@@ -284,6 +285,13 @@
     const ids = [...new Set([item,...item.querySelectorAll('*')].flatMap(idCandidates))];
     return ids.length ? ids : ['unverified-product'];
   }
+  function attachedMatches(r,item) {
+    const ids = attached(r);
+    if (ids.length === 1 && ids[0] === item.productId) return true;
+    if (ids.length !== 1 || ids[0] !== 'unverified-product' || attachedProof?.productId !== item.productId) return false;
+    const card = one(r,UI.attachedItem,'已添加商品');
+    return !!card && !!attachedProof.productName && labelText(card).includes(attachedProof.productName);
+  }
   async function setLocation(r,wanted,signal) {
     if (labelText(one(r,UI.location,'位置栏')) !== wanted) {
       click(one(r,UI.location,'位置栏'),'位置栏',signal);
@@ -308,7 +316,7 @@
   }
   async function attachProduct(r,item,signal) {
     const old = attached(r);
-    if (old.length === 1 && old[0] === item.productId && !timing(r)) return;
+    if (old.length === 1 && attachedMatches(r,item) && !timing(r)) return;
     if (old.length) throw Error('表单已有商品或商品 ID 无法读取，请在页面核对并移除多余商品');
     requireConfig(['attachedItem','openProductPicker','timingDialog','timingConfirm']);
     if (!one(r,UI.openProductPicker,'打开选品控件')) {
@@ -347,9 +355,17 @@
       const matches = rows.filter(row => rowHasId(row,item.productId));
       if (matches.length > 1) throw Error('搜索结果中存在多条相同 ID');
       if (!matches.length && rows.length) throw Error('搜索结果未显示可核对的完整商品 ID，请在页面人工选择并核实');
-      return matches[0] && one(matches[0],UI.productCheckbox,'匹配商品的选择框');
+      if (!matches.length) return null;
+      const row = matches[0];
+      const cells = [...row.querySelectorAll('td')];
+      const info = cells.find(cell => labelText(cell).includes(item.productId)) || cells[1] || row;
+      const productName = labelText(info)
+        .replace(new RegExp('(?:商品\\s*)?ID\\s*[：:]?\\s*' + item.productId,'i'),'')
+        .replace(item.productId,'').trim();
+      if (!productName) throw Error('无法读取匹配商品名称，已停止添加');
+      return {control:one(row,UI.productCheckbox,'匹配商品的选择框'),productName};
     },'完全匹配的商品 ID 搜索结果',signal);
-    if (!checked.checked) click(checked,'选择匹配商品',signal);
+    if (!checked.control.checked) click(checked.control,'选择匹配商品',signal);
     const add = await wait(s => {
       const current = s && one(s,UI.productDialog,'商品搜索弹窗');
       if (!current) return null;
@@ -357,6 +373,7 @@
       if (selected.length !== 1) return null;
       const row = selected[0];
       if (!rowHasId(row,item.productId)) throw Error('选中的商品 ID 与清单不符');
+      attachedProof = {productId:item.productId,productName:checked.productName};
       return all(current,UI.button).find(button => /^添加(?:\s*[（(]1[）)])?$/.test(labelText(button)) && enabled(button));
     },'唯一已选商品的添加按钮',signal);
     click(add,'添加(1)',signal);
@@ -374,8 +391,7 @@
         }
         return null;
       }
-      const ids = attached(s);
-      if (one(s,UI.productDialog,'商品搜索弹窗') || ids.length !== 1 || ids[0] !== item.productId) {
+      if (one(s,UI.productDialog,'商品搜索弹窗') || !attachedMatches(s,item)) {
         stableSince = 0; return null;
       }
       stableSince ||= performance.now();
@@ -470,8 +486,7 @@
     if (readValue(one(r,UI.description,'视频描述')) !== item.description) throw Error('描述回读与清单不一致');
     if (readValue(one(r,UI.title,'短标题')) !== item.title) throw Error('短标题回读与清单不一致');
     if (labelText(one(r,UI.location,'位置栏')) !== item.location) throw Error('位置回读与清单不一致');
-    const ids = attached(r);
-    if (ids.length !== 1 || ids[0] !== item.productId) throw Error('表单中的商品 ID 未通过精确核验');
+    if (!attachedMatches(r,item)) throw Error('表单中的商品与已核对的商品 ID 不一致');
     if (timing(r) || one(r,UI.productDialog,'商品搜索弹窗')) throw Error('商品弹窗仍在打开，请完成确认');
     const radios = all(r,'input[type="radio"]:checked').map(e=>labelText(e.closest('label')));
     if (!radios.includes('不定时')) throw Error('请检查发表方式，当前未核实为不定时');
@@ -549,6 +564,7 @@
       if (dry) { status('试跑通过。请核对平台表单，取消勾选试跑后点击开始发布可继续本条。'); return; }
       status('核验通过，正在发表。');
       await submit(r,item,key,signal);
+      attachedProof = null;
       status('已提交 / 发表结果待平台核验。准备下一条时，先在发表页上传下一条视频。');
     } catch (error) {
       const entry = key && receipts()[key];

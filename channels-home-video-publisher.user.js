@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频号主页带货发布助手
 // @namespace    local.channels.home-video-publisher
-// @version      1.1.8
+// @version      1.1.9
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js
 // @match        https://channels.weixin.qq.com/platform/post/create*
@@ -79,7 +79,7 @@
   </style>
   <button id="launch">发布助手</button>
   <section id="window" aria-label="主页带货发布助手" hidden>
-    <header class="head"><div><strong>主页带货发布助手</strong><small>v1.1.8 · 使用已上传视频</small></div><button id="min" title="收起面板" aria-label="收起面板">−</button></header>
+    <header class="head"><div><strong>主页带货发布助手</strong><small>v1.1.9 · 使用已上传视频</small></div><button id="min" title="收起面板" aria-label="收起面板">−</button></header>
     <div class="body">
       <div class="card"><h2>视频清单</h2>
         <fieldset id="editor">
@@ -287,8 +287,8 @@
   }
   function attachedMatches(r,item) {
     const ids = attached(r);
-    if (ids.length === 1 && ids[0] === item.productId) return true;
-    if (ids.length !== 1 || ids[0] !== 'unverified-product' || attachedProof?.productId !== item.productId) return false;
+    if (ids.includes(item.productId)) return ids.length === 1;
+    if (attachedProof?.productId !== item.productId) return false;
     const card = one(r,UI.attachedItem,'已添加商品');
     return !!card && !!attachedProof.productName && labelText(card).includes(attachedProof.productName);
   }

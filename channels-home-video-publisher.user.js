@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频号主页带货发布助手
 // @namespace    local.channels.home-video-publisher
-// @version      1.1.6
+// @version      1.1.7
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js
 // @match        https://channels.weixin.qq.com/platform/post/create*
@@ -30,7 +30,7 @@
     productSearchButton: '.search-btn button',
     productRows: '.shop-table-wrap .ant-table-tbody > tr',
     productLoading: '.shop-table-wrap .common-table-loading',
-    productCheckbox: 'input.ant-checkbox-input',
+    productCheckbox: 'input.ant-checkbox-input, input.ant-radio-input, input[type="checkbox"], input[type="radio"]',
     button: 'button',
     confirmation: '.intercept-original-dialog .weui-desktop-dialog__wrp',
     success: '.create-success-dialog .weui-desktop-dialog__wrp',
@@ -78,7 +78,7 @@
   </style>
   <button id="launch">发布助手</button>
   <section id="window" aria-label="主页带货发布助手" hidden>
-    <header class="head"><div><strong>主页带货发布助手</strong><small>v1.1.6 · 使用已上传视频</small></div><button id="min" title="收起面板" aria-label="收起面板">−</button></header>
+    <header class="head"><div><strong>主页带货发布助手</strong><small>v1.1.7 · 使用已上传视频</small></div><button id="min" title="收起面板" aria-label="收起面板">−</button></header>
     <div class="body">
       <div class="card"><h2>视频清单</h2>
         <fieldset id="editor">
@@ -321,7 +321,12 @@
     const picker = await wait(s => s && one(s,UI.openProductPicker,'打开选品控件'),'打开选品控件',signal);
     click(picker,'打开选品控件',signal);
     const dialog = await wait(s => s && one(s,UI.productDialog,'商品搜索弹窗'),'商品搜索弹窗',signal);
-    const search = one(dialog,UI.productSearch,'商品搜索输入框');
+    const search = await wait(s => {
+      if (!s) return null;
+      const current = one(s,UI.productDialog,'商品搜索弹窗');
+      const input = current && one(current,UI.productSearch,'商品搜索输入框');
+      return input && !input.disabled && !input.readOnly ? input : null;
+    },'可输入的商品搜索框',signal);
     const previousRows = all(dialog,UI.productRows);
     const previousText = previousRows.map(labelText).join('\n');
     let resultsChanged = search?.value === item.productId;
@@ -342,13 +347,13 @@
       const matches = rows.filter(row => rowHasId(row,item.productId));
       if (matches.length > 1) throw Error('搜索结果中存在多条相同 ID');
       if (!matches.length && rows.length) throw Error('搜索结果未显示可核对的完整商品 ID，请在页面人工选择并核实');
-      return matches[0] && one(matches[0],UI.productCheckbox,'匹配商品的复选框');
+      return matches[0] && one(matches[0],UI.productCheckbox,'匹配商品的选择框');
     },'完全匹配的商品 ID 搜索结果',signal);
     if (!checked.checked) click(checked,'选择匹配商品',signal);
     const add = await wait(s => {
       const current = s && one(s,UI.productDialog,'商品搜索弹窗');
       if (!current) return null;
-      const selected = all(current,UI.productRows).filter(row => one(row,UI.productCheckbox,'商品复选框')?.checked);
+      const selected = all(current,UI.productRows).filter(row => one(row,UI.productCheckbox,'商品选择框')?.checked);
       if (selected.length !== 1) return null;
       const row = selected[0];
       if (!rowHasId(row,item.productId)) throw Error('选中的商品 ID 与清单不符');

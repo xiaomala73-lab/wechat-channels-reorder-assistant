@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频号主页带货发布助手
 // @namespace    local.channels.home-video-publisher
-// @version      1.1.9
+// @version      1.2.0
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js
 // @match        https://channels.weixin.qq.com/platform/post/create*
@@ -46,6 +46,9 @@
     direct: '直接发表', timing: '选择商品出现时机',
     uploadError: /网络出错[，,、\s]*请重新上传|上传失败|视频上传出错/,
   };
+  const knownProductNames = {
+    '10000496758101': '植护衣物香氛柔顺剂浓香护色护衣增柔去静电持久留香20ml去异味',
+  };
   const DRAFT = 'publisher.draft.v1';
   const RECEIPTS = 'publisher.receipts.v1';
   const lockName = 'channels-home-video-publisher';
@@ -79,7 +82,7 @@
   </style>
   <button id="launch">发布助手</button>
   <section id="window" aria-label="主页带货发布助手" hidden>
-    <header class="head"><div><strong>主页带货发布助手</strong><small>v1.1.9 · 使用已上传视频</small></div><button id="min" title="收起面板" aria-label="收起面板">−</button></header>
+    <header class="head"><div><strong>主页带货发布助手</strong><small>v1.2.0 · 使用已上传视频</small></div><button id="min" title="收起面板" aria-label="收起面板">−</button></header>
     <div class="body">
       <div class="card"><h2>视频清单</h2>
         <fieldset id="editor">
@@ -168,6 +171,12 @@
     const nodes = all(scope, selector);
     if (nodes.length > 1) throw Error(label + '匹配到多个控件，请校准选择器');
     return nodes[0] || null;
+  }
+  function productDialog(scope) {
+    const dialogs = all(scope,UI.productDialog).filter(dialog =>
+      all(dialog,UI.productSearch).some(input => !input.disabled && !input.readOnly));
+    if (dialogs.length > 1) throw Error('商品搜索弹窗匹配到多个可见窗口');
+    return dialogs[0] || null;
   }
   const labelText = e => (e?.innerText ?? e?.textContent ?? '').trim().replace(/\s+/g,' ');
   function exact(scope, selector, label) {
@@ -287,10 +296,14 @@
   }
   function attachedMatches(r,item) {
     const ids = attached(r);
-    if (ids.includes(item.productId)) return ids.length === 1;
-    if (attachedProof?.productId !== item.productId) return false;
     const card = one(r,UI.attachedItem,'已添加商品');
-    return !!card && !!attachedProof.productName && labelText(card).includes(attachedProof.productName);
+    if (ids.includes(item.productId)) return true;
+    if (!card) return false;
+    const cardText = labelText(card);
+    const knownName = knownProductNames[item.productId];
+    if (knownName && cardText.includes(knownName)) return true;
+    return attachedProof?.productId === item.productId && !!attachedProof.productName &&
+      cardText.includes(attachedProof.productName);
   }
   async function setLocation(r,wanted,signal) {
     if (labelText(one(r,UI.location,'位置栏')) !== wanted) {
@@ -328,10 +341,10 @@
     }
     const picker = await wait(s => s && one(s,UI.openProductPicker,'打开选品控件'),'打开选品控件',signal);
     click(picker,'打开选品控件',signal);
-    const dialog = await wait(s => s && one(s,UI.productDialog,'商品搜索弹窗'),'商品搜索弹窗',signal);
+    const dialog = await wait(s => s && productDialog(s),'商品搜索弹窗',signal);
     const search = await wait(s => {
       if (!s) return null;
-      const current = one(s,UI.productDialog,'商品搜索弹窗');
+      const current = productDialog(s);
       const input = current && one(current,UI.productSearch,'商品搜索输入框');
       return input && !input.disabled && !input.readOnly ? input : null;
     },'可输入的商品搜索框',signal);
@@ -343,7 +356,7 @@
     const checked = await wait(s => {
       if (!s) return null;
       errors(s);
-      const current = one(s,UI.productDialog,'商品搜索弹窗');
+      const current = productDialog(s);
       if (!current || one(current,UI.productSearch,'商品搜索输入框')?.value !== item.productId) return null;
       if (oneOrAny(current,UI.productLoading)) { resultsChanged = true; return null; }
       const rows = all(current,UI.productRows);
@@ -367,7 +380,7 @@
     },'完全匹配的商品 ID 搜索结果',signal);
     if (!checked.control.checked) click(checked.control,'选择匹配商品',signal);
     const add = await wait(s => {
-      const current = s && one(s,UI.productDialog,'商品搜索弹窗');
+      const current = s && productDialog(s);
       if (!current) return null;
       const selected = all(current,UI.productRows).filter(row => one(row,UI.productCheckbox,'商品选择框')?.checked);
       if (selected.length !== 1) return null;
@@ -391,7 +404,7 @@
         }
         return null;
       }
-      if (one(s,UI.productDialog,'商品搜索弹窗') || !attachedMatches(s,item)) {
+      if (productDialog(s) || !attachedMatches(s,item)) {
         stableSince = 0; return null;
       }
       stableSince ||= performance.now();
@@ -487,7 +500,7 @@
     if (readValue(one(r,UI.title,'短标题')) !== item.title) throw Error('短标题回读与清单不一致');
     if (labelText(one(r,UI.location,'位置栏')) !== item.location) throw Error('位置回读与清单不一致');
     if (!attachedMatches(r,item)) throw Error('表单中的商品与已核对的商品 ID 不一致');
-    if (timing(r) || one(r,UI.productDialog,'商品搜索弹窗')) throw Error('商品弹窗仍在打开，请完成确认');
+    if (timing(r) || productDialog(r)) throw Error('商品弹窗仍在打开，请完成确认');
     const radios = all(r,'input[type="radio"]:checked').map(e=>labelText(e.closest('label')));
     if (!radios.includes('不定时')) throw Error('请检查发表方式，当前未核实为不定时');
   }

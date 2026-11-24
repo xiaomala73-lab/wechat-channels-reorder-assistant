@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频号主页带货发布助手
 // @namespace    local.channels.home-video-publisher
-// @version      1.2.0
+// @version      1.2.1
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/channels-home-video-publisher.user.js
 // @match        https://channels.weixin.qq.com/platform/post/create*
@@ -82,7 +82,7 @@
   </style>
   <button id="launch">发布助手</button>
   <section id="window" aria-label="主页带货发布助手" hidden>
-    <header class="head"><div><strong>主页带货发布助手</strong><small>v1.2.0 · 使用已上传视频</small></div><button id="min" title="收起面板" aria-label="收起面板">−</button></header>
+    <header class="head"><div><strong>主页带货发布助手</strong><small>v1.2.1 · 使用已上传视频</small></div><button id="min" title="收起面板" aria-label="收起面板">−</button></header>
     <div class="body">
       <div class="card"><h2>视频清单</h2>
         <fieldset id="editor">
@@ -506,7 +506,7 @@
   }
   async function submit(r,item,key,signal) {
     if (!navigator.locks) throw Error('浏览器未提供跨标签提交锁，请改用人工发表');
-    await navigator.locks.request(lockName,{ifAvailable:true,signal},async lock => {
+    await navigator.locks.request(lockName,{ifAvailable:true},async lock => {
       if (!lock) throw Error('另一个标签正在提交，请先核验该标签的结果');
       checkRun(signal);
       if (receipts()[key]) throw Error('此条有提交记录，请先核验视频列表');

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Material Chase Assistant (Android)
 // @namespace    local.qianchuan.chase
-// @version      0.4.44
+// @version      0.4.45
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js
 // @description  Android old/new material status headers; product/live eligibility, semantic tables and pagination compatibility.
@@ -1303,23 +1303,12 @@
       genderVerified: true };
   }
 
-  function assertClosedRunSubmissionClear(ids) {
-    const wanted = new Set(ids);
-    const unresolved = journal.runs.find(run => run.manuallyClosed &&
-      run.accountId === state.config.accountId && run.planId === state.config.planId &&
-      run.groups.some(group => !group.uiSuccess &&
-        group.status !== 'prepared' && group.status !== 'verified' &&
-        (group.ids || []).some(id => wanted.has(id))));
-    if (unresolved) throw new Error('所选素材在已结束轮次中仍有提交结果未核实，请先点“只重新核查未核清任务”，避免重复追投');
-  }
-
   async function submitGroup(items) {
     var cfg = state.config;
     var drawer = context('creative').drawer;
     if (items.length < 1 || items.length > 20) throw new Error('\u5355\u7EC4\u7D20\u6750\u6570\u91CF\u8D8A\u754C');
     if (selectedCount(drawer) !== items.length) throw new Error('\u63D0\u4EA4\u524D\u5DF2\u9009\u6570\u91CF\u4E0D\u5339\u914D');
     var selectedIds = items.map(function (x) { return x.id; });
-    assertClosedRunSubmissionClear(selectedIds);
     var submittedThisRun = new Set();
     state.currentRun.groups.forEach(function (group) {
       if (group.uiSuccess) {
@@ -2828,7 +2817,7 @@
     }
   }
 
-  function closePausedRun() {
+  async function closePausedRun() {
     if (state.busy) return;
     const point = chaseCheckpoint();
     if (!point) return;
@@ -2839,6 +2828,8 @@
       const warning = !run ? '\n本轮日志缺失，历史提交结果无法确认，请到平台核对。' :
         pending.length ? '\n还有 ' + pending.length + ' 组待核查，记录会保留，可稍后点击“只重新核查未核清任务”。' : '';
       if (!window.confirm('结束本轮？只结束脚本续跑，平台已提交的追投任务继续保留。' + warning)) return;
+      state.busy = true;
+      state.stopRequested = false;
       if (run) {
         run.manuallyClosed = true;
         run.closedAt = new Date().toISOString();
@@ -2864,10 +2855,33 @@
       state.resumeRun = null;
       state.currentRun = null;
       state.refreshing = false;
+      let selectionHint = '';
+      if (point.selected?.length) {
+        try {
+          const {drawer} = context(null);
+          if (selectedCount(drawer)) {
+            context('creative');
+            if (point.dateRange !== new URL(location.href).searchParams.get('dateRange') ||
+                Array.from(document.querySelectorAll('.assist-task-modal')).some(visible)) {
+              throw new Error('素材日期已变化或追投弹窗仍打开');
+            }
+            await clearChaseResumeSelection(point, drawer);
+          }
+        } catch (error) {
+          selectionHint = '；如有旧勾选，请手动取消后再开始';
+          addLog('未能清理本轮遗留勾选：' + error.message);
+        }
+      }
       addLog('用户已结束本轮；历史任务和核查记录保留，未新增或取消平台任务');
-      setPhase('已结束本轮，可以重新设置追投参数' +
+      setPhase('已结束本轮，可以重新设置追投参数' + selectionHint +
         (pending.length ? '；' + pending.length + ' 组待核查记录已保留' : !run ? '；历史提交请到平台核对' : ''));
     } catch (error) { setPhase('结束本轮失败：' + error.message); }
+    finally {
+      if (state.busy) {
+        state.busy = false;
+        render();
+      }
+    }
   }
 
   async function start(manualResume = false) {
@@ -3231,7 +3245,7 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       '</style>',
       '<button class="launcher" id="launch" title="\u70B9\u51FB\u5C55\u5F00\uFF0C\u62D6\u52A8\u53EF\u8C03\u6574\u4F4D\u7F6E" aria-label="\u5C55\u5F00\u5343\u5DDD\u8FFD\u6295\u52A9\u624B" style="display:', state.open === false ? 'block' : 'none', ';top:', esc(state.launcherTop), '%">\u8FFD\u6295\u52A9\u624B</button>',
       '<div class="panel" style="display:', state.open === false ? 'none' : 'flex', '">',
-      '<div class="head"><strong>\u5343\u5DDD\u7D20\u6750\u8FFD\u6295\u52A9\u624B v0.4.44</strong><button id="close" title="\u6700\u5C0F\u5316" aria-label="\u6700\u5C0F\u5316\u52A9\u624B">\u2212</button></div>',
+      '<div class="head"><strong>\u5343\u5DDD\u7D20\u6750\u8FFD\u6295\u52A9\u624B v0.4.45</strong><button id="close" title="\u6700\u5C0F\u5316" aria-label="\u6700\u5C0F\u5316\u52A9\u624B">\u2212</button></div>',
       '<div class="body">',
       '<div class="card"><div class="muted">\u9501\u5B9A\u8D26\u6237 / ', cfg.planKind === 'live' ? '\u63A8\u76F4\u64AD\u95F4\u8BA1\u5212' : '\u5546\u54C1\u81EA\u9009\u8BA1\u5212', '</div>',
       '<strong>', esc(cfg.accountName || '\u5C1A\u672A\u9501\u5B9A'), '</strong><br>',

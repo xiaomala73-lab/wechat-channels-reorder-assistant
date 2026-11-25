@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巨量千川素材追投助手（安全锁定版）
 // @namespace    local.qianchuan.chase
-// @version      0.4.42
+// @version      0.4.43
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js
 // @description  商品日期追投可设最终尾组最低数量；直播日期允许未审核素材；整组复核补选；提交失败限重试一次
@@ -1175,23 +1175,12 @@
       genderVerified: true };
   }
 
-  function assertClosedRunSubmissionClear(ids) {
-    const wanted = new Set(ids);
-    const unresolved = journal.runs.find(run => run.manuallyClosed &&
-      run.accountId === state.config.accountId && run.planId === state.config.planId &&
-      run.groups.some(group => !group.uiSuccess &&
-        group.status !== 'prepared' && group.status !== 'verified' &&
-        (group.ids || []).some(id => wanted.has(id))));
-    if (unresolved) throw new Error('所选素材在已结束轮次中仍有提交结果未核实，请先点“只重新核查未核清任务”，避免重复追投');
-  }
-
   async function submitGroup(items) {
     var cfg = state.config;
     var drawer = context('creative').drawer;
     if (items.length < 1 || items.length > 20) throw new Error('单组素材数量越界');
     if (selectedCount(drawer) !== items.length) throw new Error('提交前已选数量不匹配');
     var selectedIds = items.map(function (x) { return x.id; });
-    assertClosedRunSubmissionClear(selectedIds);
     var submittedThisRun = new Set();
     state.currentRun.groups.forEach(function (group) {
       if (group.uiSuccess) {
@@ -2692,7 +2681,7 @@
     }
   }
 
-  function closePausedRun() {
+  async function closePausedRun() {
     if (state.busy) return;
     const point = chaseCheckpoint();
     if (!point) return;
@@ -2703,6 +2692,8 @@
       const warning = !run ? '\n本轮日志缺失，历史提交结果无法确认，请到平台核对。' :
         pending.length ? '\n还有 ' + pending.length + ' 组待核查，记录会保留，可稍后点击“只重新核查未核清任务”。' : '';
       if (!window.confirm('结束本轮？只结束脚本续跑，平台已提交的追投任务继续保留。' + warning)) return;
+      state.busy = true;
+      state.stopRequested = false;
       if (run) {
         run.manuallyClosed = true;
         run.closedAt = new Date().toISOString();
@@ -2728,10 +2719,33 @@
       state.resumeRun = null;
       state.currentRun = null;
       state.refreshing = false;
+      let selectionHint = '';
+      if (point.selected?.length) {
+        try {
+          const {drawer} = context(null);
+          if (selectedCount(drawer)) {
+            context('creative');
+            if (point.dateRange !== new URL(location.href).searchParams.get('dateRange') ||
+                Array.from(document.querySelectorAll('.assist-task-modal')).some(visible)) {
+              throw new Error('素材日期已变化或追投弹窗仍打开');
+            }
+            await clearChaseResumeSelection(point, drawer);
+          }
+        } catch (error) {
+          selectionHint = '；如有旧勾选，请手动取消后再开始';
+          addLog('未能清理本轮遗留勾选：' + error.message);
+        }
+      }
       addLog('用户已结束本轮；历史任务和核查记录保留，未新增或取消平台任务');
-      setPhase('已结束本轮，可以重新设置追投参数' +
+      setPhase('已结束本轮，可以重新设置追投参数' + selectionHint +
         (pending.length ? '；' + pending.length + ' 组待核查记录已保留' : !run ? '；历史提交请到平台核对' : ''));
     } catch (error) { setPhase('结束本轮失败：' + error.message); }
+    finally {
+      if (state.busy) {
+        state.busy = false;
+        render();
+      }
+    }
   }
 
   async function start(manualResume = false) {
@@ -2932,7 +2946,7 @@
       '</style>',
       '<button class="launcher" id="launch" title="点击展开，拖动可调整位置" aria-label="展开千川追投助手" style="display:', state.open === false ? 'block' : 'none', ';top:', esc(state.launcherTop), '%">追投助手</button>',
       '<div class="panel" style="display:', state.open === false ? 'none' : 'flex', '">',
-      '<div class="head"><strong>千川素材追投助手 v0.4.42</strong><button id="close" title="最小化" aria-label="最小化助手">−</button></div>',
+      '<div class="head"><strong>千川素材追投助手 v0.4.43</strong><button id="close" title="最小化" aria-label="最小化助手">−</button></div>',
       '<div class="body">',
       '<div class="card"><div class="muted">锁定账户 / ', cfg.planKind === 'live' ? '推直播间计划' : '商品自选计划', '</div>',
       '<strong>', esc(cfg.accountName || '尚未锁定'), '</strong><br>',

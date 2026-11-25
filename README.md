@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 直播定时调速 | [v1.2.11](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js) | [v1.2.15](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js) |
 | 调控 | [v0.1.18](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js) | [v0.1.23](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js) |
-| 素材追投 | [v0.4.42](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js) | [v0.4.44](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js) |
+| 素材追投 | [v0.4.43](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js) | [v0.4.45](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js) |
 | 零消耗素材清理 | [v1.1.8](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-windows.user.js) | [v1.1.10](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-android.user.js) |
 
 | 视频号助手 | 安装与订阅 |
@@ -33,11 +33,11 @@
 
 逐单加热助手兼容扫码和免验证支付：确认本轮订单并授权提交及支付后，平台要求扫码时等待用户扫码，显示“免验证提交”时直接提交付款；每单核对成功后继续下一单。按平台实际页面判断，不在本地记录当天首笔。
 
-素材追投 Windows `v0.4.42` / 安卓 `v0.4.44`：「结束本轮」允许在提交结果待核查时确认结束，不再要求先核查通过。结束会清除本轮续跑进度并取消关联的批量续跑，平台任务和历史核查记录保留，可稍后单独核查。再次开始时，若选中已结束轮次中仍有不明确提交结果的同一素材，会阻止重复提交并提示核查；已核查结果不会被改写。
+素材追投 Windows `v0.4.43` / 安卓 `v0.4.45`：「结束本轮」允许在提交结果待核查时确认结束，不再要求先核查通过。结束会清除本轮续跑进度并取消关联的批量续跑，平台任务和历史核查记录保留，可稍后单独核查。重新开始时按新设置和平台当前素材状态筛选，不读取已结束轮次的提交记录来拦截；继续本轮才沿用该轮已有的提交记录和核查要求。结束时只清理能够确认属于本轮的遗留勾选，无法确认时提示手动取消。
 
 ## 千川新旧 ROI 字段兼容
 
-素材追投 Windows `v0.4.42` / 安卓 `v0.4.44`，调控 Windows `v0.1.18` / 安卓 `v0.1.23`：兼容账户逐步上线的「1小时净成交综合营销ROI」和「调控1小时净成交综合营销ROI」，继续支持旧的「综合营销ROI」「调控综合营销ROI」和「调控支付ROI」。
+素材追投 Windows `v0.4.43` / 安卓 `v0.4.45`，调控 Windows `v0.1.18` / 安卓 `v0.1.23`：兼容账户逐步上线的「1小时净成交综合营销ROI」和「调控1小时净成交综合营销ROI」，继续支持旧的「综合营销ROI」「调控综合营销ROI」和「调控支付ROI」。
 
 素材追投有 1 小时净成交列时优先按该列降序和阈值选素材，没有时使用旧列；排序、翻页、行读取及提交前复核使用同一列。执行记录和报告标明实际列名，本轮中途更换 ROI 列时暂停。只显示 24 小时净成交列时，不将其替代为 1 小时指标。
 

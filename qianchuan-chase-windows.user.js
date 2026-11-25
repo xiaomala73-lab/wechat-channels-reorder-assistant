@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巨量千川素材追投助手（安全锁定版）
 // @namespace    local.qianchuan.chase
-// @version      0.4.41
+// @version      0.4.42
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js
 // @description  商品日期追投可设最终尾组最低数量；直播日期允许未审核素材；整组复核补选；提交失败限重试一次
@@ -1175,12 +1175,23 @@
       genderVerified: true };
   }
 
+  function assertClosedRunSubmissionClear(ids) {
+    const wanted = new Set(ids);
+    const unresolved = journal.runs.find(run => run.manuallyClosed &&
+      run.accountId === state.config.accountId && run.planId === state.config.planId &&
+      run.groups.some(group => !group.uiSuccess &&
+        group.status !== 'prepared' && group.status !== 'verified' &&
+        (group.ids || []).some(id => wanted.has(id))));
+    if (unresolved) throw new Error('所选素材在已结束轮次中仍有提交结果未核实，请先点“只重新核查未核清任务”，避免重复追投');
+  }
+
   async function submitGroup(items) {
     var cfg = state.config;
     var drawer = context('creative').drawer;
     if (items.length < 1 || items.length > 20) throw new Error('单组素材数量越界');
     if (selectedCount(drawer) !== items.length) throw new Error('提交前已选数量不匹配');
     var selectedIds = items.map(function (x) { return x.id; });
+    assertClosedRunSubmissionClear(selectedIds);
     var submittedThisRun = new Set();
     state.currentRun.groups.forEach(function (group) {
       if (group.uiSuccess) {
@@ -2514,6 +2525,7 @@
   async function resumeAfterDataRefresh(checkpoint) {
     var run = journal.runs.find(function (item) { return item.id === checkpoint.runId; });
     try {
+      if (run?.manuallyClosed) throw new Error('本轮已手动结束，不能自动恢复');
       if (!run || run.status !== 'refreshing' || Date.now() - checkpoint.createdAt > 5 * 60 * 1000 ||
           !Number.isInteger(checkpoint.page) || checkpoint.page < 1 || checkpoint.page > 300) {
         throw new Error('刷新恢复记录已失效');
@@ -2685,15 +2697,41 @@
     const point = chaseCheckpoint();
     if (!point) return;
     try {
-      context(null);
       const run = journal.runs.find(item => item.id === point.runId);
-      if (!run || run.groups.some(group => !group.uiSuccess && group.status !== 'prepared')) {
-        throw new Error('上次提交尚未核实，请先重新核查任务');
+      const pending = run ? run.groups.filter(group =>
+        group.status !== 'prepared' && group.status !== 'verified') : [];
+      const warning = !run ? '\n本轮日志缺失，历史提交结果无法确认，请到平台核对。' :
+        pending.length ? '\n还有 ' + pending.length + ' 组待核查，记录会保留，可稍后点击“只重新核查未核清任务”。' : '';
+      if (!window.confirm('结束本轮？只结束脚本续跑，平台已提交的追投任务继续保留。' + warning)) return;
+      if (run) {
+        run.manuallyClosed = true;
+        run.closedAt = new Date().toISOString();
+        run.verifyDeferred = pending.length > 0;
+        run.status = pending.length ? 'needs_review' :
+          (run.groups.some(group => group.status === 'verified') ? 'verified' : 'stopped_without_submit');
+        saveJournal();
+        state.report = makeReport(run);
       }
-      if (!window.confirm('结束本轮？已提交的追投任务会保留。')) return;
+      const refresh = GM_getValue(REFRESH_KEY, null);
+      if (refresh?.runId === point.runId) {
+        GM_setValue(REFRESH_KEY, null);
+        sessionStorage.removeItem(REFRESH_TAB_KEY);
+      }
+      const batch = state.batch;
+      if (batch?.account?.accountId === state.config.accountId &&
+          batch.plans?.[batch.index]?.id === state.config.planId) {
+        batch.status = 'cancelled';
+        saveBatch();
+        state.batchRunActive = false;
+      }
       setChaseCheckpoint(state.config, null);
-      setPhase('已结束本轮，可以重新设置追投参数');
-    } catch (error) { setPhase(error.message); }
+      state.resumeRun = null;
+      state.currentRun = null;
+      state.refreshing = false;
+      addLog('用户已结束本轮；历史任务和核查记录保留，未新增或取消平台任务');
+      setPhase('已结束本轮，可以重新设置追投参数' +
+        (pending.length ? '；' + pending.length + ' 组待核查记录已保留' : !run ? '；历史提交请到平台核对' : ''));
+    } catch (error) { setPhase('结束本轮失败：' + error.message); }
   }
 
   async function start(manualResume = false) {
@@ -2727,6 +2765,7 @@
         const saved = journal.runs.find(item => item.id === point.runId &&
           item.accountId === current.accountId && item.planId === current.planId);
         if (!saved) throw new Error('本轮提交日志已缺失，无法安全继续');
+        if (saved.manuallyClosed) throw new Error('本轮已手动结束，请重新开始');
         saved.groups = saved.groups.filter(group => group.status !== 'prepared');
         if (saved.groups.some(group => !group.uiSuccess || ['possible_duplicate', 'mismatch'].includes(group.status))) {
           throw new Error('本轮有提交结果未核实；请先点「只重新核查未核清任务」，核查通过后回素材页继续');
@@ -2893,7 +2932,7 @@
       '</style>',
       '<button class="launcher" id="launch" title="点击展开，拖动可调整位置" aria-label="展开千川追投助手" style="display:', state.open === false ? 'block' : 'none', ';top:', esc(state.launcherTop), '%">追投助手</button>',
       '<div class="panel" style="display:', state.open === false ? 'none' : 'flex', '">',
-      '<div class="head"><strong>千川素材追投助手 v0.4.41</strong><button id="close" title="最小化" aria-label="最小化助手">−</button></div>',
+      '<div class="head"><strong>千川素材追投助手 v0.4.42</strong><button id="close" title="最小化" aria-label="最小化助手">−</button></div>',
       '<div class="body">',
       '<div class="card"><div class="muted">锁定账户 / ', cfg.planKind === 'live' ? '推直播间计划' : '商品自选计划', '</div>',
       '<strong>', esc(cfg.accountName || '尚未锁定'), '</strong><br>',

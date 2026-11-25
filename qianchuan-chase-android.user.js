@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Material Chase Assistant (Android)
 // @namespace    local.qianchuan.chase
-// @version      0.4.43
+// @version      0.4.44
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js
 // @description  Android old/new material status headers; product/live eligibility, semantic tables and pagination compatibility.
@@ -1303,12 +1303,23 @@
       genderVerified: true };
   }
 
+  function assertClosedRunSubmissionClear(ids) {
+    const wanted = new Set(ids);
+    const unresolved = journal.runs.find(run => run.manuallyClosed &&
+      run.accountId === state.config.accountId && run.planId === state.config.planId &&
+      run.groups.some(group => !group.uiSuccess &&
+        group.status !== 'prepared' && group.status !== 'verified' &&
+        (group.ids || []).some(id => wanted.has(id))));
+    if (unresolved) throw new Error('所选素材在已结束轮次中仍有提交结果未核实，请先点“只重新核查未核清任务”，避免重复追投');
+  }
+
   async function submitGroup(items) {
     var cfg = state.config;
     var drawer = context('creative').drawer;
     if (items.length < 1 || items.length > 20) throw new Error('\u5355\u7EC4\u7D20\u6750\u6570\u91CF\u8D8A\u754C');
     if (selectedCount(drawer) !== items.length) throw new Error('\u63D0\u4EA4\u524D\u5DF2\u9009\u6570\u91CF\u4E0D\u5339\u914D');
     var selectedIds = items.map(function (x) { return x.id; });
+    assertClosedRunSubmissionClear(selectedIds);
     var submittedThisRun = new Set();
     state.currentRun.groups.forEach(function (group) {
       if (group.uiSuccess) {
@@ -2650,6 +2661,7 @@
   async function resumeAfterDataRefresh(checkpoint) {
     var run = journal.runs.find(function (item) { return item.id === checkpoint.runId; });
     try {
+      if (run?.manuallyClosed) throw new Error('本轮已手动结束，不能自动恢复');
       if (!run || run.status !== 'refreshing' || Date.now() - checkpoint.createdAt > 5 * 60 * 1000 ||
           !Number.isInteger(checkpoint.page) || checkpoint.page < 1 || checkpoint.page > 300) {
         throw new Error('\u5237\u65B0\u6062\u590D\u8BB0\u5F55\u5DF2\u5931\u6548');
@@ -2821,15 +2833,41 @@
     const point = chaseCheckpoint();
     if (!point) return;
     try {
-      context(null);
       const run = journal.runs.find(item => item.id === point.runId);
-      if (!run || run.groups.some(group => !group.uiSuccess && group.status !== 'prepared')) {
-        throw new Error('上次提交尚未核实，请先重新核查任务');
+      const pending = run ? run.groups.filter(group =>
+        group.status !== 'prepared' && group.status !== 'verified') : [];
+      const warning = !run ? '\n本轮日志缺失，历史提交结果无法确认，请到平台核对。' :
+        pending.length ? '\n还有 ' + pending.length + ' 组待核查，记录会保留，可稍后点击“只重新核查未核清任务”。' : '';
+      if (!window.confirm('结束本轮？只结束脚本续跑，平台已提交的追投任务继续保留。' + warning)) return;
+      if (run) {
+        run.manuallyClosed = true;
+        run.closedAt = new Date().toISOString();
+        run.verifyDeferred = pending.length > 0;
+        run.status = pending.length ? 'needs_review' :
+          (run.groups.some(group => group.status === 'verified') ? 'verified' : 'stopped_without_submit');
+        saveJournal();
+        state.report = makeReport(run);
       }
-      if (!window.confirm('结束本轮？已提交的追投任务会保留。')) return;
+      const refresh = GM_getValue(REFRESH_KEY, null);
+      if (refresh?.runId === point.runId) {
+        GM_setValue(REFRESH_KEY, null);
+        sessionStorage.removeItem(REFRESH_TAB_KEY);
+      }
+      const batch = state.batch;
+      if (batch?.account?.accountId === state.config.accountId &&
+          batch.plans?.[batch.index]?.id === state.config.planId) {
+        batch.status = 'cancelled';
+        saveBatch();
+        state.batchRunActive = false;
+      }
       setChaseCheckpoint(state.config, null);
-      setPhase('已结束本轮，可以重新设置追投参数');
-    } catch (error) { setPhase(error.message); }
+      state.resumeRun = null;
+      state.currentRun = null;
+      state.refreshing = false;
+      addLog('用户已结束本轮；历史任务和核查记录保留，未新增或取消平台任务');
+      setPhase('已结束本轮，可以重新设置追投参数' +
+        (pending.length ? '；' + pending.length + ' 组待核查记录已保留' : !run ? '；历史提交请到平台核对' : ''));
+    } catch (error) { setPhase('结束本轮失败：' + error.message); }
   }
 
   async function start(manualResume = false) {
@@ -2863,6 +2901,7 @@
         const saved = journal.runs.find(item => item.id === point.runId &&
           item.accountId === current.accountId && item.planId === current.planId);
         if (!saved) throw new Error('本轮提交日志已缺失，无法安全继续');
+        if (saved.manuallyClosed) throw new Error('本轮已手动结束，请重新开始');
         saved.groups = saved.groups.filter(group => group.status !== 'prepared');
         if (saved.groups.some(group => !group.uiSuccess || ['possible_duplicate', 'mismatch'].includes(group.status))) {
           throw new Error('本轮有提交结果未核实；请先点「只重新核查未核清任务」，核查通过后回素材页继续');
@@ -3192,7 +3231,7 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
       '</style>',
       '<button class="launcher" id="launch" title="\u70B9\u51FB\u5C55\u5F00\uFF0C\u62D6\u52A8\u53EF\u8C03\u6574\u4F4D\u7F6E" aria-label="\u5C55\u5F00\u5343\u5DDD\u8FFD\u6295\u52A9\u624B" style="display:', state.open === false ? 'block' : 'none', ';top:', esc(state.launcherTop), '%">\u8FFD\u6295\u52A9\u624B</button>',
       '<div class="panel" style="display:', state.open === false ? 'none' : 'flex', '">',
-      '<div class="head"><strong>\u5343\u5DDD\u7D20\u6750\u8FFD\u6295\u52A9\u624B v0.4.43</strong><button id="close" title="\u6700\u5C0F\u5316" aria-label="\u6700\u5C0F\u5316\u52A9\u624B">\u2212</button></div>',
+      '<div class="head"><strong>\u5343\u5DDD\u7D20\u6750\u8FFD\u6295\u52A9\u624B v0.4.44</strong><button id="close" title="\u6700\u5C0F\u5316" aria-label="\u6700\u5C0F\u5316\u52A9\u624B">\u2212</button></div>',
       '<div class="body">',
       '<div class="card"><div class="muted">\u9501\u5B9A\u8D26\u6237 / ', cfg.planKind === 'live' ? '\u63A8\u76F4\u64AD\u95F4\u8BA1\u5212' : '\u5546\u54C1\u81EA\u9009\u8BA1\u5212', '</div>',
       '<strong>', esc(cfg.accountName || '\u5C1A\u672A\u9501\u5B9A'), '</strong><br>',

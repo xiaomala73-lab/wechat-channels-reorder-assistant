@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         千川调控助手
 // @namespace    local.qianchuan.task-governor
-// @version      0.1.18
+// @version      0.1.19
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js
 // @description  直播高ROI任务追加预算，支持因任务预算不足暂停的任务；低ROI删除；先检查本页再执行
@@ -743,14 +743,19 @@
     }
     function closePausedRun() {
       if (state.busy) return;
+      const current = checkpoint();
+      if (!current) return;
       try {
-        assertLock();
-        if (checkpoint()?.pending) throw new Error('上次提交尚未核实，请核对后继续本轮');
-        if (!window.confirm('结束本轮？已完成的操作会保留。')) return;
         saveCheckpoint(null);
-        state.preview = null;
-        phase('已结束本轮，请重新检查后再执行');
-      } catch (error) { phase(error.message); }
+      } catch (error) {
+        phase('结束本轮失败：' + error.message);
+        return;
+      }
+      state.preview = null;
+      const message = '已结束本轮，请重新检查后再执行';
+      const pendingNote = current.pending ? '；本轮最后一次提交未核实（任务 ID：' + current.pending.ids.join('、') + '）' : '';
+      phase(message);
+      report(message + pendingNote);
     }
     async function executePage(resume = false) {
       if (state.busy) return;
@@ -832,7 +837,7 @@
           !(label === '调控综合营销ROI' && p.roiLabels.includes('调控1小时净成交综合营销ROI'))) : [];
       const previewItems = targets.slice(0, 100).map(x => `<div class="item"><b>${esc(x.name || x.id)}</b><span class="pill">ID ${esc(x.id)}</span>${isProductDelete(p.params.action) ? `${p.roiLabels.includes('调控1小时净成交综合营销ROI') ? `<span class="pill">调控1小时净成交综合营销ROI ${Number.isFinite(x.netMarketingRoi) ? esc(x.netMarketingRoi) : x.netMarketingRoiDash ? '—' : '不可用'}</span>` : ''}${p.roiLabels.includes('调控综合营销ROI') ? `<span class="pill">调控综合营销ROI ${Number.isFinite(x.marketingRoi) ? esc(x.marketingRoi) : x.marketingRoiDash ? '—' : '不可用'}</span>` : ''}${p.roiLabels.includes('调控支付ROI') ? `<span class="pill">调控支付ROI ${Number.isFinite(x.paymentRoi) ? esc(x.paymentRoi) : x.paymentRoiDash ? '—' : '不可用'}</span>` : ''}<span class="pill">综合成本 ${yuan(x.comprehensiveCost)} 元</span><span class="pill">调控消耗 ${yuan(x.spend)} 元</span>` : `<span class="pill">ROI ${esc(x.roi)}</span>`}${Number.isInteger(x.budget) ? `<span class="pill">预算 ${yuan(x.budget)}</span><span class="pill">消耗 ${yuan(x.spend)}</span>` : ''}${p.params.action === 'live-budget' ? `<span class="pill">拟改为 ${yuan(x.budget + p.params.add)}</span>` : ''}</div>`).join('');
       shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${state.open ? 'none' : 'block'};top:${esc(state.launcherTop)}%" title="点击展开，拖动调整位置">调控助手</button>
-        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>千川调控助手</strong><small>v0.1.18 · 按计划预填 ROI 和追加预算参数 · 默认静默最小化</small></div><button id="minimize" title="最小化">−</button></div><div class="body">
+        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>千川调控助手</strong><small>v0.1.19 · 按计划预填 ROI 和追加预算参数 · 默认静默最小化</small></div><button id="minimize" title="最小化">−</button></div><div class="body">
         <div class="card"><div class="eyebrow">锁定当前计划</div><div class="title">${esc(lock?.planName || '尚未锁定')}</div><div class="muted">账户 ${esc(lock?.accountId || '—')} · 计划 ${esc(lock?.planId || '—')} · ${lock?.kind === 'live' ? '推直播' : lock?.kind === 'product' ? '推商品' : '未识别'}</div>${needsRelock ? '<div class="hint warn">当前页面与已锁定计划不同，请重新锁定当前计划。</div>' : ''}<div class="row"><button id="lock" class="btn" ${state.busy ? 'disabled' : ''}>锁定当前计划</button></div></div>
         <div class="card"><div class="eyebrow">筛选条件</div><label class="field">本次操作<select id="action" ${fieldDisabled}><option value="">请选择</option>${choices}${protectedMode ? '<option value="' + protectedAction + '" hidden>低 ROI 删除（保留 0 消耗）</option>' : ''}</select></label>${keepZeroButton}${conditionFields}
         ${protectedMode ? '<div class="hint">只筛选调控消耗已确认大于 0 且符合低 ROI 删除条件的任务。</div>' : ''}<div class="hint">锁定商品计划时自动选择低 ROI 删除；名单内预填 ROI，名单外留空。可手动修改；重新锁定或重新选择直播低 ROI 删除会恢复默认值。</div>${conditionHint ? `<div class="hint">${conditionHint}</div>` : ''}</div>

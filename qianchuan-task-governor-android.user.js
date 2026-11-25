@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qianchuan Task Governor (Android)
 // @namespace    local.qianchuan.task-governor
-// @version      0.1.23
+// @version      0.1.24
 // @updateURL    https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js
 // @downloadURL  https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js
 // @description  Android-compatible task governor; preview and verify each page before deleting tasks or increasing budgets.
@@ -918,14 +918,19 @@
     }
     function closePausedRun() {
       if (state.busy) return;
+      const current = checkpoint();
+      if (!current) return;
       try {
-        assertLock();
-        if (checkpoint()?.pending) throw new Error('上次提交尚未核实，请核对后继续本轮');
-        if (!window.confirm('结束本轮？已完成的操作会保留。')) return;
         saveCheckpoint(null);
-        state.preview = null;
-        phase('已结束本轮，请重新检查后再执行');
-      } catch (error) { phase(error.message); }
+      } catch (error) {
+        phase('结束本轮失败：' + error.message);
+        return;
+      }
+      state.preview = null;
+      const message = '已结束本轮，请重新检查后再执行';
+      const pendingNote = current.pending ? '；本轮最后一次提交未核实（任务 ID：' + current.pending.ids.join('、') + '）' : '';
+      phase(message);
+      report(message + pendingNote);
     }
     async function executePage(resume = false) {
       if (state.busy) return;
@@ -1171,7 +1176,7 @@ function createAndroidLauncherPosition(shadow, storageKey, slot) {
           !(label === '\u8c03\u63a7\u7efc\u5408\u8425\u9500ROI' && p.roiLabels.includes('调控1小时净成交综合营销ROI'))) : [];
       const previewItems = targets.slice(0, 100).map(x => `<div class="item"><b>${esc(x.name || x.id)}</b><span class="pill">ID ${esc(x.id)}</span>${isProductDelete(p.params.action) ? `${p.roiLabels.includes('调控1小时净成交综合营销ROI') ? `<span class="pill">调控1小时净成交综合营销ROI ${Number.isFinite(x.netMarketingRoi) ? esc(x.netMarketingRoi) : x.netMarketingRoiDash ? '—' : '不可用'}</span>` : ''}${p.roiLabels.includes('\u8c03\u63a7\u7efc\u5408\u8425\u9500ROI') ? `<span class="pill">\u8c03\u63a7\u7efc\u5408\u8425\u9500ROI ${Number.isFinite(x.marketingRoi) ? esc(x.marketingRoi) : x.marketingRoiDash ? '\u2014' : '\u4e0d\u53ef\u7528'}</span>` : ''}${p.roiLabels.includes('\u8c03\u63a7\u652f\u4ed8ROI') ? `<span class="pill">\u8c03\u63a7\u652f\u4ed8ROI ${Number.isFinite(x.paymentRoi) ? esc(x.paymentRoi) : x.paymentRoiDash ? '\u2014' : '\u4e0d\u53ef\u7528'}</span>` : ''}<span class="pill">\u7efc\u5408\u6210\u672c ${yuan(x.comprehensiveCost)} \u5143</span><span class="pill">\u8c03\u63a7\u6d88\u8017 ${yuan(x.spend)} \u5143</span>` : `<span class="pill">ROI ${esc(x.roi)}</span>`}${Number.isInteger(x.budget) ? `<span class="pill">\u9884\u7b97 ${yuan(x.budget)}</span><span class="pill">\u6d88\u8017 ${yuan(x.spend)}</span>` : ''}${p.params.action === 'live-budget' ? `<span class="pill">\u62df\u6539\u4e3a ${yuan(x.budget + p.params.add)}</span>` : ''}</div>`).join('');
       shadow.innerHTML = css + `<button id="launch" class="launcher" style="display:${state.open ? 'none' : 'block'};top:${esc(state.launcherTop)}%" title="\u70b9\u51fb\u5c55\u5f00\uff0c\u62d6\u52a8\u8c03\u6574\u4f4d\u7f6e">\u8c03\u63a7\u52a9\u624b</button>
-        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>\u5343\u5ddd\u8c03\u63a7\u52a9\u624b</strong><small>v0.1.23 安卓版 · 按计划预填 ROI 和追加预算参数 · 默认静默最小化</small></div><button id="minimize" title="\u6700\u5c0f\u5316">\u2212</button></div><div class="body">
+        <div class="panel" style="display:${state.open ? 'flex' : 'none'}"><div class="head"><div><strong>\u5343\u5ddd\u8c03\u63a7\u52a9\u624b</strong><small>v0.1.24 安卓版 · 按计划预填 ROI 和追加预算参数 · 默认静默最小化</small></div><button id="minimize" title="\u6700\u5c0f\u5316">\u2212</button></div><div class="body">
         <div class="card"><div class="eyebrow">\u9501\u5b9a\u5f53\u524d\u8ba1\u5212</div><div class="title">${esc(lock?.planName || '\u5c1a\u672a\u9501\u5b9a')}</div><div class="muted">\u8d26\u6237 ${esc(lock?.accountId || '\u2014')} \u00b7 \u8ba1\u5212 ${esc(lock?.planId || '\u2014')} \u00b7 ${lock?.kind === 'live' ? '\u63a8\u76f4\u64ad' : lock?.kind === 'product' ? '\u63a8\u5546\u54c1' : '\u672a\u8bc6\u522b'}</div>${needsRelock ? '<div class="hint warn">\u5f53\u524d\u9875\u9762\u4e0e\u5df2\u9501\u5b9a\u8ba1\u5212\u4e0d\u540c\uff0c\u8bf7\u91cd\u65b0\u9501\u5b9a\u5f53\u524d\u8ba1\u5212\u3002</div>' : ''}<div class="row"><button id="lock" class="btn" ${state.busy ? 'disabled' : ''}>\u9501\u5b9a\u5f53\u524d\u8ba1\u5212</button></div></div>
         <div class="card"><div class="eyebrow">\u7b5b\u9009\u6761\u4ef6</div><label class="field">\u672c\u6b21\u64cd\u4f5c<select id="action" ${fieldDisabled}><option value="">\u8bf7\u9009\u62e9</option>${choices}${protectedMode ? '<option value="' + protectedAction + '" hidden>低 ROI 删除（保留 0 消耗）</option>' : ''}</select></label>${keepZeroButton}${conditionFields}
         ${protectedMode ? '<div class="hint">只筛选调控消耗已确认大于 0 且符合低 ROI 删除条件的任务。</div>' : ''}<div class="hint">锁定商品计划时自动选择低 ROI 删除；名单内预填 ROI，名单外留空。可手动修改；重新锁定或重新选择直播低 ROI 删除会恢复默认值。</div>${conditionHint ? `<div class="hint">${conditionHint}</div>` : ''}</div>

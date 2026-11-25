@@ -7,7 +7,7 @@
 | 千川助手 | Windows | 安卓 |
 | --- | --- | --- |
 | 直播定时调速 | [v1.2.11](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-windows.user.js) | [v1.2.15](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-live-speed-android.user.js) |
-| 调控 | [v0.1.18](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js) | [v0.1.23](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js) |
+| 调控 | [v0.1.19](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-windows.user.js) | [v0.1.24](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-task-governor-android.user.js) |
 | 素材追投 | [v0.4.43](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-windows.user.js) | [v0.4.45](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-chase-android.user.js) |
 | 零消耗素材清理 | [v1.1.8](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-windows.user.js) | [v1.1.10](https://raw.githubusercontent.com/xiaomala73-lab/wechat-channels-reorder-assistant/main/qianchuan-zero-cost-cleaner-android.user.js) |
 
@@ -34,6 +34,8 @@
 逐单加热助手兼容扫码和免验证支付：确认本轮订单并授权提交及支付后，平台要求扫码时等待用户扫码，显示“免验证提交”时直接提交付款；每单核对成功后继续下一单。按平台实际页面判断，不在本地记录当天首笔。
 
 素材追投 Windows `v0.4.43` / 安卓 `v0.4.45`：「结束本轮」允许在提交结果待核查时确认结束，不再要求先核查通过。结束会清除本轮续跑进度并取消关联的批量续跑，平台任务和历史核查记录保留，可稍后单独核查。重新开始时按新设置和平台当前素材状态筛选，不读取已结束轮次的提交记录来拦截；继续本轮才沿用该轮已有的提交记录和核查要求。结束时只清理能够确认属于本轮的遗留勾选，无法确认时提示手动取消。
+
+调控助手点击「结束本轮」即清除当前计划的续跑进度和预览，无需核实上次提交。平台上已提交的操作照常处理；重新执行前须点「检查本页」，按平台当前数据生成新清单。只有「继续本轮」才核实本轮未确认的提交。
 
 ## 千川新旧 ROI 字段兼容
 
